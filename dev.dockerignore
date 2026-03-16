@@ -1,0 +1,38 @@
+# Python cache and virtualenv
+*.pyc
+*.pyo
+*.pyd
+__pycache__/
+.venv/
+.venv
+.env/
+example.env
+.env.production
+.Python
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+.cache
+.tox/
+.hypothesis/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Editor directories and OS files
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Project files you don't want in image
+LICENSE
+
+# Github
+.devcontainer/
+.github/
+
+# Docker files
+prod.Dockerfile
+prod.dockerignore

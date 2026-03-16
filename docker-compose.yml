@@ -1,0 +1,35 @@
+name: python-boilerplate
+
+networks:
+  project-network:
+    name: ${DOCKER_NETWORK_NAME}
+    driver: bridge
+
+services:
+  python-boilerplate:
+    image: ${DOCKER_PROJECT_NAME}:${DOCKER_IMAGE_TAG}
+    container_name: ${DOCKER_CONTAINER_NAME}
+    build:
+      context: .
+      dockerfile: dev.Dockerfile
+
+    develop:
+      watch:
+        # Sync the working directory with the `/app` directory in the container
+        - action: sync
+          path: .
+          target: /app
+          ignore:
+            - app/.venv/
+        # Rebuild the image on changes to the `pyproject.toml`
+        - action: rebuild
+          path: ./app/pyproject.toml
+
+    ports:
+      - "8080:8000"
+    restart: on-failure
+
+    volumes:
+      - ./src/:/app/src/
+    networks:
+      - project-network

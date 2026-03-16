@@ -1,0 +1,27 @@
+name: Check Python Minimum Version
+# This workflow will run compatibility checks using Vermin, which checks the minimum Python version required for the codebase.
+
+# uv run vermin --eval-annotations --backport typing  --no-parse-comments .
+on:
+  push:
+    branches: ["*"]
+  pull_request:
+    branches: ["*"]
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v4
+        with:
+          python-version: "3.13"
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install vermin
+      - name: Check minimal Python version
+        run: vermin --eval-annotations --backport typing --no-parse-comments .
