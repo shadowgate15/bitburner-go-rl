@@ -211,7 +211,7 @@ def build_network(
     )
 
     # Infer action count from the actor (convenience check)
-    assert n_actions == cfg.board_size ** 2 + 1
+    assert n_actions == cfg.board_size**2 + 1
 
     return actor, critic
 
@@ -338,8 +338,10 @@ def train(cfg: TrainConfig | None = None) -> None:
     iter_idx = 0
     t0 = time.time()
 
-    print(f"[train] Starting training: {total_iters} iterations, "
-          f"{cfg.total_frames:,} total frames")
+    print(
+        f"[train] Starting training: {total_iters} iterations, "
+        f"{cfg.total_frames:,} total frames"
+    )
 
     for data in collector:
         # data shape: (frames_per_batch,) TensorDict
@@ -386,9 +388,7 @@ def train(cfg: TrainConfig | None = None) -> None:
                 optimizer.zero_grad()
                 total_loss.backward()
                 # Gradient clipping for stable training
-                nn.utils.clip_grad_norm_(
-                    all_params, cfg.max_grad_norm
-                )
+                nn.utils.clip_grad_norm_(all_params, cfg.max_grad_norm)
                 optimizer.step()
 
                 epoch_losses.append(total_loss.item())
@@ -398,9 +398,7 @@ def train(cfg: TrainConfig | None = None) -> None:
         # ----------------------------------------------------------
         if iter_idx % cfg.log_interval == 0:
             elapsed = time.time() - t0
-            mean_reward = (
-                data["next", "reward"].mean().item()
-            )
+            mean_reward = data["next", "reward"].mean().item()
             mean_loss = (
                 sum(epoch_losses) / len(epoch_losses)
                 if epoch_losses
@@ -467,91 +465,129 @@ def _parse_args() -> TrainConfig:
 
     # Environment
     parser.add_argument(
-        "--board-size", type=int, default=9,
+        "--board-size",
+        type=int,
+        default=9,
         help="Side length of the Go board (default: 9).",
     )
     parser.add_argument(
-        "--websocket-uri", type=str, default="ws://localhost:8765",
+        "--websocket-uri",
+        type=str,
+        default="ws://localhost:8765",
         help="WebSocket URI of the Bitburner IPvGO server.",
     )
 
     # Network
     parser.add_argument(
-        "--n-filters", type=int, default=64,
+        "--n-filters",
+        type=int,
+        default=64,
         help="CNN filter count per layer.",
     )
     parser.add_argument(
-        "--n-cnn-layers", type=int, default=3,
+        "--n-cnn-layers",
+        type=int,
+        default=3,
         help="Number of convolutional layers.",
     )
     parser.add_argument(
-        "--n-fc", type=int, default=256,
+        "--n-fc",
+        type=int,
+        default=256,
         help="Fully-connected feature size.",
     )
 
     # PPO
     parser.add_argument(
-        "--clip-epsilon", type=float, default=0.2,
+        "--clip-epsilon",
+        type=float,
+        default=0.2,
         help="PPO clipping parameter ε.",
     )
     parser.add_argument(
-        "--entropy-coeff", type=float, default=0.01,
+        "--entropy-coeff",
+        type=float,
+        default=0.01,
         help="Entropy bonus coefficient.",
     )
     parser.add_argument(
-        "--critic-coeff", type=float, default=0.5,
+        "--critic-coeff",
+        type=float,
+        default=0.5,
         help="Critic loss coefficient.",
     )
 
     # GAE
     parser.add_argument(
-        "--gamma", type=float, default=0.99,
+        "--gamma",
+        type=float,
+        default=0.99,
         help="Discount factor gamma.",
     )
     parser.add_argument(
-        "--lmbda", type=float, default=0.95,
+        "--lmbda",
+        type=float,
+        default=0.95,
         help="GAE λ parameter.",
     )
 
     # Data collection
     parser.add_argument(
-        "--frames-per-batch", type=int, default=256,
+        "--frames-per-batch",
+        type=int,
+        default=256,
         help="Rollout steps per PPO iteration.",
     )
     parser.add_argument(
-        "--total-frames", type=int, default=100_000,
+        "--total-frames",
+        type=int,
+        default=100_000,
         help="Total environment steps to train for.",
     )
 
     # PPO updates
     parser.add_argument(
-        "--n-epochs", type=int, default=4,
+        "--n-epochs",
+        type=int,
+        default=4,
         help="PPO update epochs per iteration.",
     )
     parser.add_argument(
-        "--minibatch-size", type=int, default=64,
+        "--minibatch-size",
+        type=int,
+        default=64,
         help="Mini-batch size for PPO updates.",
     )
     parser.add_argument(
-        "--lr", type=float, default=3e-4,
+        "--lr",
+        type=float,
+        default=3e-4,
         help="Adam learning rate.",
     )
     parser.add_argument(
-        "--max-grad-norm", type=float, default=0.5,
+        "--max-grad-norm",
+        type=float,
+        default=0.5,
         help="Gradient clipping norm.",
     )
 
     # Logging / checkpointing
     parser.add_argument(
-        "--log-interval", type=int, default=1,
+        "--log-interval",
+        type=int,
+        default=1,
         help="Log every N iterations.",
     )
     parser.add_argument(
-        "--save-interval", type=int, default=10,
+        "--save-interval",
+        type=int,
+        default=10,
         help="Save checkpoint every N iterations.",
     )
     parser.add_argument(
-        "--checkpoint-dir", type=str, default="checkpoints",
+        "--checkpoint-dir",
+        type=str,
+        default="checkpoints",
         help="Directory for model checkpoints.",
     )
 
