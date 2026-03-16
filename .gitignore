@@ -139,6 +139,9 @@ ENV/
 env.bak/
 venv.bak/
 
+# Allow src/env package
+!src/env/
+
 # Spyder project settings
 .spyderproject
 .spyproject
