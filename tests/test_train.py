@@ -77,6 +77,14 @@ class TestGoCNN:
         out = model(_make_obs(batch=1))
         assert out.shape[0] == 1
 
+    def test_unbatched_input(self) -> None:
+        """GoCNN must accept a single unbatched (3-D) observation."""
+        model = GoCNN(board_size=BOARD_SIZE, n_fc=128)
+        obs = _make_obs(batch=1).squeeze(0)  # (4, B, B) — no batch dim
+        assert obs.dim() == 3
+        out = model(obs)
+        assert out.shape == (128,)
+
 
 # ---------------------------------------------------------------------------
 # GoActorNet
@@ -139,6 +147,20 @@ class TestGoActorNet:
             for p in model.parameters()
         )
 
+    def test_unbatched_input(self) -> None:
+        """GoActorNet must accept a single unbatched (3-D) observation.
+
+        TorchRL's SyncDataCollector calls the policy with an unbatched
+        observation during initialisation.  The network must not raise
+        a ValueError from BatchNorm2d.
+        """
+        n_actions = BOARD_SIZE * BOARD_SIZE + 1
+        model = GoActorNet(board_size=BOARD_SIZE)
+        obs = _make_obs(batch=1, all_legal=True).squeeze(0)  # (4, B, B)
+        assert obs.dim() == 3
+        logits = model(obs)
+        assert logits.shape == (n_actions,)
+
 
 # ---------------------------------------------------------------------------
 # GoValueNet
@@ -174,6 +196,19 @@ class TestGoValueNet:
             p.grad is not None and p.grad.abs().sum() > 0
             for p in model.parameters()
         )
+
+    def test_unbatched_input(self) -> None:
+        """GoValueNet must accept a single unbatched (3-D) observation.
+
+        TorchRL's SyncDataCollector calls the critic with an unbatched
+        observation during initialisation.  The network must not raise
+        a ValueError from BatchNorm2d.
+        """
+        model = GoValueNet(board_size=BOARD_SIZE)
+        obs = _make_obs(batch=1).squeeze(0)  # (4, B, B)
+        assert obs.dim() == 3
+        val = model(obs)
+        assert val.shape == (1,)
 
 
 # ---------------------------------------------------------------------------

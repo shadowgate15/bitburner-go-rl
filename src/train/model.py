@@ -84,15 +84,25 @@ class GoCNN(nn.Module):
 
         Args:
             obs: Float32 tensor of shape
-                ``(batch, in_channels, board_size, board_size)``.
+                ``(batch, in_channels, board_size, board_size)`` or
+                ``(in_channels, board_size, board_size)`` for a single
+                unbatched observation (e.g. during collector
+                initialisation).
 
         Returns:
-            Feature tensor of shape ``(batch, n_fc)``.
+            Feature tensor of shape ``(batch, n_fc)``, or ``(n_fc,)``
+            when the input was unbatched.
         """
+        unbatched = obs.dim() == 3
+        if unbatched:
+            obs = obs.unsqueeze(0)
         # obs: (batch, C, B, B)
         x = self.conv(obs)  # (batch, n_filters, B, B)
         x = x.flatten(start_dim=1)  # (batch, n_filters * B * B)
-        return self.fc(x)  # (batch, n_fc)
+        features = self.fc(x)  # (batch, n_fc)
+        if unbatched:
+            features = features.squeeze(0)
+        return features
 
 
 class GoActorNet(nn.Module):
@@ -151,12 +161,19 @@ class GoActorNet(nn.Module):
 
         Args:
             obs: Float32 tensor of shape
-                ``(batch, 4, board_size, board_size)``.
+                ``(batch, 4, board_size, board_size)`` or
+                ``(4, board_size, board_size)`` for a single unbatched
+                observation (e.g. during collector initialisation).
 
         Returns:
             Logits tensor of shape ``(batch, n_actions)`` with illegal
-            moves set to ``-1e9``.
+            moves set to ``-1e9``, or ``(n_actions,)`` when the input
+            was unbatched.
         """
+        unbatched = obs.dim() == 3
+        if unbatched:
+            obs = obs.unsqueeze(0)
+
         features = self.cnn(obs)  # (batch, n_fc)
         logits = self.policy_head(features)  # (batch, n_actions)
 
@@ -175,6 +192,9 @@ class GoActorNet(nn.Module):
         # Mask illegal positions with a large negative value.
         # Using -1e9 rather than -inf avoids NaN in softmax edge cases.
         logits = logits.masked_fill(legal_mask < 0.5, -1e9)
+
+        if unbatched:
+            logits = logits.squeeze(0)
         return logits
 
 
@@ -229,13 +249,22 @@ class GoValueNet(nn.Module):
 
         Args:
             obs: Float32 tensor of shape
-                ``(batch, 4, board_size, board_size)``.
+                ``(batch, 4, board_size, board_size)`` or
+                ``(4, board_size, board_size)`` for a single unbatched
+                observation (e.g. during collector initialisation).
 
         Returns:
-            Value tensor of shape ``(batch, 1)``.
+            Value tensor of shape ``(batch, 1)``, or ``(1,)`` when the
+            input was unbatched.
         """
+        unbatched = obs.dim() == 3
+        if unbatched:
+            obs = obs.unsqueeze(0)
         features = self.cnn(obs)  # (batch, n_fc)
-        return self.value_head(features)  # (batch, 1)
+        value = self.value_head(features)  # (batch, 1)
+        if unbatched:
+            value = value.squeeze(0)
+        return value
 
 
 __all__ = ["GoActorNet", "GoCNN", "GoValueNet"]
