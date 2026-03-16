@@ -4,7 +4,13 @@ version = "0.10.0"
 description = "A template for quickly starting new projects in Python "
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["environs>=14.2.0"]
+dependencies = [
+    "environs>=14.2.0",
+    "tensordict>=0.11.0",
+    "torch>=2.10.0",
+    "torchrl>=0.11.0",
+    "websockets>=13.0",
+]
 
 [dependency-groups]
 dev = [
