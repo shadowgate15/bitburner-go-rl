@@ -23,10 +23,10 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install ruff mypy pytest pytest-asyncio
+          pip install ruff pyright pytest pytest-asyncio
       - name: Lint (ruff)
         run: ruff check --config=pyproject.toml src/
-      - name: Type check (mypy)
-        run: mypy --config-file=pyproject.toml src/
+      - name: Type check (pyright)
+        run: pyright --project=pyproject.toml src/
       - name: Run tests (pytest)
         run: pytest -v

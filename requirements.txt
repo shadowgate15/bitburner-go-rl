@@ -90,10 +90,8 @@ mkdocstrings==0.29.1
     #   mkdocstrings-python
 mkdocstrings-python==1.16.12
     # via mkdocstrings
-mypy==1.16.0
+pyright==1.1.408
     # via python-boilerplate (pyproject.toml:dev)
-mypy-extensions==1.1.0
-    # via mypy
 nodeenv==1.9.1
     # via pre-commit
 packaging==25.0
@@ -104,9 +102,7 @@ packaging==25.0
 paginate==0.5.7
     # via mkdocs-material
 pathspec==0.12.1
-    # via
-    #   mkdocs
-    #   mypy
+    # via mkdocs
 platformdirs==4.3.8
     # via
     #   mkdocs-get-deps
@@ -157,8 +153,6 @@ termcolor==3.1.0
     # via commitizen
 tomlkit==0.13.3
     # via commitizen
-typing-extensions==4.14.0
-    # via mypy
 urllib3==2.5.0
     # via requests
 virtualenv==20.31.2
