@@ -658,6 +658,86 @@ class TestPlayEpisode:
         result = play_episode(env, actor, opp, BOARD_SIZE)
         assert result["steps"] >= 1
 
+    def test_reset_sends_no_ai_for_random_opponent(self) -> None:
+        """play_episode must call env._reset with 'no-ai' for RandomOpponent."""
+        actor, _ = _make_actor_critic()
+        env = _make_env_with_mock(n_steps=0, reward=1.0)
+        n_actions = BOARD_SIZE * BOARD_SIZE + 1
+        opp = RandomOpponent(n_actions)
+        play_episode(env, actor, opp, BOARD_SIZE)
+        env._client.reset.assert_called_once_with("no-ai")  # type: ignore[union-attr]
+
+    def test_reset_sends_no_ai_for_model_opponent(self) -> None:
+        """play_episode must call env._reset with 'no-ai' for ModelOpponent."""
+        actor, _ = _make_actor_critic()
+        env = _make_env_with_mock(n_steps=0, reward=1.0)
+        opp = ModelOpponent(actor)
+        play_episode(env, actor, opp, BOARD_SIZE)
+        env._client.reset.assert_called_once_with("no-ai")  # type: ignore[union-attr]
+
+    def test_reset_sends_bot_name_for_builtin_opponent(self) -> None:
+        """play_episode must call env._reset with the bot name for BuiltinOpponent."""
+        actor, _ = _make_actor_critic()
+
+        board = ["." * BOARD_SIZE for _ in range(BOARD_SIZE)]
+        legal = [True] * (BOARD_SIZE * BOARD_SIZE + 1)
+
+        env = TorchRLGoEnv(board_size=BOARD_SIZE)
+        env_mock_client = MagicMock()
+        env_mock_client.reset.return_value = {
+            "board": board,
+            "current_player": "black",
+            "legal_moves": legal,
+        }
+        # Episode ends on agent's first step so builtin never needs to move.
+        env_mock_client.step.return_value = {
+            "board": board,
+            "current_player": "white",
+            "legal_moves": legal,
+            "reward": 1.0,
+            "done": True,
+        }
+        env._client = env_mock_client
+
+        builtin_client = MagicMock()
+        opp = BuiltinOpponent("hard", builtin_client)
+
+        play_episode(env, actor, opp, BOARD_SIZE)
+
+        env_mock_client.reset.assert_called_once_with("hard")
+
+    def test_reset_sends_correct_name_for_each_builtin_bot(self) -> None:
+        """play_episode must forward whichever bot name the BuiltinOpponent holds."""
+        for bot_name in ["easy", "medium", "hard"]:
+            actor, _ = _make_actor_critic()
+            board = ["." * BOARD_SIZE for _ in range(BOARD_SIZE)]
+            legal = [True] * (BOARD_SIZE * BOARD_SIZE + 1)
+
+            env = TorchRLGoEnv(board_size=BOARD_SIZE)
+            env_mock_client = MagicMock()
+            env_mock_client.reset.return_value = {
+                "board": board,
+                "current_player": "black",
+                "legal_moves": legal,
+            }
+            env_mock_client.step.return_value = {
+                "board": board,
+                "current_player": "white",
+                "legal_moves": legal,
+                "reward": 1.0,
+                "done": True,
+            }
+            env._client = env_mock_client
+
+            builtin_client = MagicMock()
+            opp = BuiltinOpponent(bot_name, builtin_client)
+
+            play_episode(env, actor, opp, BOARD_SIZE)
+
+            env_mock_client.reset.assert_called_once_with(bot_name), (
+                f"Expected reset called with '{bot_name}'"
+            )
+
     def test_builtin_opponent_step_called_not_env_step(self) -> None:
         """For BuiltinOpponent, step() is called; env._step is not called for opponent's turn.
 

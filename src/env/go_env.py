@@ -243,7 +243,11 @@ class TorchRLGoEnv(EnvBase):
     # TorchRL interface
     # ------------------------------------------------------------------
 
-    def _reset(self, tensordict: TensorDict | None = None) -> TensorDict:
+    def _reset(
+        self,
+        tensordict: TensorDict | None = None,
+        opponent: str = "no-ai",
+    ) -> TensorDict:
         """Reset the environment and return the initial observation.
 
         Sends a ``reset`` message to the Bitburner server, receives the
@@ -251,12 +255,18 @@ class TorchRLGoEnv(EnvBase):
         containing the encoded observation and ``done=False``.
 
         Args:
-            tensordict: Unused; present for API compatibility.
+            tensordict: Unused; present for API compatibility with
+                TorchRL's :class:`~torchrl.envs.EnvBase`.
+            opponent: Opponent name to pass to the server.  Use a
+                built-in bot name (e.g. ``"easy"``, ``"medium"``,
+                ``"hard"``) when the server should control the opposing
+                player, or ``"no-ai"`` (the default) when the Python
+                side controls both players.
 
         Returns:
             TensorDict with keys ``"observation"`` and ``"done"``.
         """
-        response = self.client.reset()
+        response = self.client.reset(opponent)
 
         board_state: list[str] = response["board"]
         current_player: str = response.get("current_player", "black")

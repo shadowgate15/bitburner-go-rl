@@ -108,8 +108,18 @@ def play_episode(
     """
     _device = torch.device(device)
 
+    # Determine the opponent name to send with the reset request.
+    # The IPvGO server needs to know which built-in bot is playing so
+    # it can set up the correct AI; for all other opponent types (where
+    # Python controls both sides) we use "no-ai".
+    opponent_name: str = (
+        opponent.bot_name
+        if isinstance(opponent, BuiltinOpponent)
+        else "no-ai"
+    )
+
     # ---- reset -------------------------------------------------------
-    reset_td = env._reset()
+    reset_td = env._reset(opponent=opponent_name)
     obs: torch.Tensor = reset_td["observation"]  # (4, B, B)
     done: bool = bool(reset_td.get("done", torch.tensor([False]))[0].item())
 

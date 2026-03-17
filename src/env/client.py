@@ -18,9 +18,13 @@ class GoClient:
     Server message contract
     -----------------------
     reset        →
-        send: ``{"type": "reset"}``
+        send: ``{"type": "reset", "opponent": "<opponent>"}``
         recv: ``{"board": <list[str]>, "current_player": "black"|"white",
                  "legal_moves": <list[bool]>}``
+
+        ``<opponent>`` is the bot name (e.g. ``"easy"``) when the game
+        will be driven by a built-in IPvGO bot, or ``"no-ai"`` when the
+        Python side controls both players (self-play / evaluation).
 
     step         →
         send: ``{"type": "step", "action": <int>}``
@@ -89,14 +93,24 @@ class GoClient:
     # Public API
     # ------------------------------------------------------------------
 
-    def reset(self) -> dict[str, Any]:
+    def reset(self, opponent: str = "no-ai") -> dict[str, Any]:
         """Ask the server to start a new game and return the initial state.
+
+        Args:
+            opponent: Name of the opponent the server should use for
+                this game.  Pass a built-in bot name (e.g. ``"easy"``,
+                ``"medium"``, ``"hard"``) when the game will be driven
+                by an IPvGO built-in AI, or ``"no-ai"`` (the default)
+                when the Python side controls both players (self-play
+                or model-vs-model evaluation).
 
         Returns:
             Server response dict with keys ``board``, ``current_player``,
             and ``legal_moves``.
         """
-        return self._run(self._send_recv({"type": "reset"}))  # type: ignore[return-value]
+        return self._run(  # type: ignore[return-value]
+            self._send_recv({"type": "reset", "opponent": opponent})
+        )
 
     def step(self, action: int) -> dict[str, Any]:
         """Send *action* to the server and return the updated game state.

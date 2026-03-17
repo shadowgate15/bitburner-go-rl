@@ -226,6 +226,24 @@ class TestTorchRLGoEnvReset:
         env._reset()
         env._client.reset.assert_called_once()  # type: ignore[union-attr]
 
+    def test_reset_default_opponent_is_no_ai(self) -> None:
+        """_reset with no explicit opponent must send 'no-ai' to the client."""
+        env = self._make_env_with_mock_client()
+        env._reset()
+        env._client.reset.assert_called_once_with("no-ai")  # type: ignore[union-attr]
+
+    def test_reset_builtin_opponent_forwarded(self) -> None:
+        """_reset must forward the given opponent name to client.reset."""
+        env = self._make_env_with_mock_client()
+        env._reset(opponent="easy")
+        env._client.reset.assert_called_once_with("easy")  # type: ignore[union-attr]
+
+    def test_reset_no_ai_forwarded_explicitly(self) -> None:
+        """_reset must forward 'no-ai' to client.reset when given explicitly."""
+        env = self._make_env_with_mock_client()
+        env._reset(opponent="no-ai")
+        env._client.reset.assert_called_once_with("no-ai")  # type: ignore[union-attr]
+
 
 class TestTorchRLGoEnvStep:
     """Tests for TorchRLGoEnv._step."""
