@@ -21,6 +21,9 @@ init: ## Initialize the project
 run: ## Run the application without Docker
 	$(ur) __main__.py
 
+train_with_curriculum:
+	${ur} __main__curriculum.py
+
 test: ## Run the tests
 	$(ur) pytest -v
 
