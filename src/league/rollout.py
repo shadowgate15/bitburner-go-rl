@@ -15,13 +15,12 @@ IPvGO WebSocket usage
 management, but in different ways:
 
 * :class:`~src.league.opponents.BuiltinOpponent` - a single
-  :meth:`~src.env.client.GoClient.builtin_step` call both selects the
+  :meth:`~src.env.client.GoClient.move_builtin` call both selects the
   bot's move and advances game state server-side.  The caller must
   **not** call :meth:`~src.env.go_env.TorchRLGoEnv._step` afterwards.
   :func:`play_episode` handles this automatically: it uses
-  :meth:`~src.env.go_env.TorchRLGoEnv._encode_step_response` to
-  convert the server's response into a TensorDict without sending
-  another message.
+  :meth:`~src.env.go_env.TorchRLGoEnv._observe_state` to fetch the
+  updated state without sending another message.
 
 * :class:`~src.league.opponents.ModelOpponent` - move selection is
   **local** (frozen neural network inference); game-state advancement
@@ -64,7 +63,9 @@ def play_episode(
        * :class:`~src.league.opponents.BuiltinOpponent`: calls
          :meth:`~src.league.opponents.BuiltinOpponent.step`, which
          drives the server bot to play and advances state in one
-         WebSocket round-trip.  No :meth:`_step` call is made.
+         WebSocket round-trip.  No :meth:`_step` call is made;
+         instead :meth:`~src.env.go_env.TorchRLGoEnv._observe_state`
+         fetches the updated game state.
        * All other opponents (implementing
          :class:`~src.league.opponents.OpponentProtocol`): calls
          ``opponent.act(obs)`` to get an action, then advances state
@@ -155,9 +156,10 @@ def play_episode(
         if isinstance(opponent, BuiltinOpponent):
             # The builtin bot selects and plays its move server-side in
             # one WebSocket round-trip.  Game state is already advanced
-            # when step() returns; do NOT call env._step() afterwards.
-            opp_response = opponent.step()
-            opp_td = env._encode_step_response(opp_response)
+            # when step() returns; use _observe_state() to fetch the
+            # updated state without sending another move message.
+            opponent.step()
+            opp_td = env._observe_state()
         else:
             with torch.no_grad():
                 opp_action: int = opponent.act(obs)  # type: ignore[union-attr]

@@ -250,9 +250,10 @@ class TorchRLGoEnv(EnvBase):
     ) -> TensorDict:
         """Reset the environment and return the initial observation.
 
-        Sends a ``reset`` message to the Bitburner server, receives the
-        initial board state, and returns a :class:`~tensordict.TensorDict`
-        containing the encoded observation and ``done=False``.
+        Sends a ``reset`` message to the Bitburner server to start a new
+        game, then fetches the initial board state via ``observe``, and
+        returns a :class:`~tensordict.TensorDict` containing the encoded
+        observation and ``done=False``.
 
         Args:
             tensordict: Unused; present for API compatibility with
@@ -266,11 +267,17 @@ class TorchRLGoEnv(EnvBase):
         Returns:
             TensorDict with keys ``"observation"`` and ``"done"``.
         """
-        response = self.client.reset(opponent, self.board_size)
+        success = self.client.reset(opponent, self.board_size)
+        if not success:
+            raise RuntimeError(
+                f"Server failed to reset the game "
+                f"(opponent={opponent!r}, board_size={self.board_size})"
+            )
 
-        board_state: list[str] = response["board"]
-        current_player: str = response.get("current_player", "black")
-        legal_moves: list[bool] = response["legal_moves"]
+        obs_data = self.client.observe()
+        board_state: list[str] = obs_data["board"]
+        current_player: str = obs_data.get("current_player", "black")
+        legal_moves: list[bool] = obs_data["legal_moves"]
 
         obs = encode_board(
             board_state, legal_moves, current_player, self.board_size
@@ -288,8 +295,13 @@ class TorchRLGoEnv(EnvBase):
         """Advance the environment by one step.
 
         Extracts the action from *tensordict*, sends it to the Bitburner
-        server, and returns a new :class:`~tensordict.TensorDict` containing
-        the updated observation, reward, and done flag.
+        server via :meth:`~src.env.client.GoClient.move`, fetches the
+        updated game state via :meth:`~src.env.client.GoClient.observe`,
+        and retrieves the reward via
+        :meth:`~src.env.client.GoClient.reward`.
+
+        The episode is considered done when the server reports
+        ``current_player == "none"`` in the observation response.
 
         Args:
             tensordict: Input dict that **must** contain key ``"action"``
@@ -301,13 +313,55 @@ class TorchRLGoEnv(EnvBase):
         """
         action: int = int(tensordict["action"].item())
 
-        response = self.client.step(action)
+        success = self.client.move(action)
+        if not success:
+            raise RuntimeError(
+                f"Server rejected move {action}"
+            )
 
-        board_state: list[str] = response["board"]
-        reward: float = float(response["reward"])
-        done: bool = bool(response["done"])
-        current_player: str = response.get("current_player", "black")
-        legal_moves: list[bool] = response["legal_moves"]
+        return self._observe_state()
+
+    def _set_seed(self, seed: int | None) -> None:
+        """Set the random seed (no-op - game logic lives on the server).
+
+        Args:
+            seed: Ignored.
+        """
+
+    # ------------------------------------------------------------------
+    # Extra helpers exposed for testing / debugging
+    # ------------------------------------------------------------------
+
+    def _observe_state(self, player: str = "black") -> TensorDict:
+        """Fetch the current game state from the server and encode it.
+
+        Calls :meth:`~src.env.client.GoClient.observe` to retrieve the
+        board state and :meth:`~src.env.client.GoClient.reward` to
+        retrieve the reward for *player*.  The episode is considered
+        done when ``current_player == "none"`` in the observation.
+
+        This helper is used both internally by :meth:`_step` (after
+        sending :meth:`~src.env.client.GoClient.move`) and by
+        :func:`~src.league.rollout.play_episode` after a
+        :class:`~src.league.opponents.BuiltinOpponent` has advanced the
+        game state via
+        :meth:`~src.env.client.GoClient.move_builtin`.
+
+        Args:
+            player: Player whose reward to fetch.  Defaults to
+                ``"black"`` (the learning agent's perspective).
+
+        Returns:
+            TensorDict with keys ``"observation"``, ``"reward"``, and
+            ``"done"``, shaped identically to what :meth:`_step`
+            returns.
+        """
+        obs_data = self.client.observe()
+        board_state: list[str] = obs_data["board"]
+        current_player: str = obs_data.get("current_player", "black")
+        legal_moves: list[bool] = obs_data["legal_moves"]
+        done: bool = current_player == "none"
+        reward: float = float(self.client.reward(player))
 
         obs = encode_board(
             board_state, legal_moves, current_player, self.board_size
@@ -322,40 +376,24 @@ class TorchRLGoEnv(EnvBase):
             batch_size=[],
         )
 
-    def _set_seed(self, seed: int | None) -> None:
-        """Set the random seed (no-op - game logic lives on the server).
-
-        Args:
-            seed: Ignored.
-        """
-
-    # ------------------------------------------------------------------
-    # Extra helpers exposed for testing / debugging
-    # ------------------------------------------------------------------
-
     def _encode_step_response(
         self, response: dict[str, Any]
     ) -> TensorDict:
-        """Encode a server step response into a TensorDict.
+        """Encode a pre-built server response dict into a TensorDict.
 
-        Converts a raw server response dict into the same
+        Converts a raw server response dict (with keys ``"board"``,
+        ``"reward"``, ``"done"``, ``"current_player"``, and
+        ``"legal_moves"``) into the same
         :class:`~tensordict.TensorDict` format returned by
-        :meth:`_step`, but **without** making a WebSocket call.
+        :meth:`_step`, but **without** making any WebSocket call.
 
-        This is used by :func:`~src.league.rollout.play_episode` when a
-        :class:`~src.league.opponents.BuiltinOpponent` has already
-        driven the server to advance game state via
-        :meth:`~src.env.client.GoClient.builtin_step`.  In that case
-        the caller possesses the server's response dict but must
-        **not** send another WebSocket message (the state is already
-        advanced).
+        This utility is kept for testing and any code that assembles a
+        response dict externally.  For post-move state retrieval during
+        normal operation, prefer :meth:`_observe_state`.
 
         Args:
-            response: Server response dict as returned by
-                :meth:`~src.env.client.GoClient.builtin_step` or
-                :meth:`~src.env.client.GoClient.step`.  Must contain
-                keys ``"board"``, ``"reward"``, ``"done"``,
-                ``"current_player"``, and ``"legal_moves"``.
+            response: Dict containing keys ``"board"``, ``"reward"``,
+                ``"done"``, ``"current_player"``, and ``"legal_moves"``.
 
         Returns:
             TensorDict with keys ``"observation"``, ``"reward"``, and

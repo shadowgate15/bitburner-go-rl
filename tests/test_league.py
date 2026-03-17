@@ -72,36 +72,46 @@ def _make_env_with_mock(
 ) -> TorchRLGoEnv:
     """Return a TorchRLGoEnv whose client is fully mocked.
 
-    The mock will produce *n_steps* non-terminal steps followed by a
-    terminal step with *reward*.
-    """
-    from tensordict import TensorDict
+    The mock produces *n_steps* non-terminal steps followed by a
+    terminal step with *reward*, using the new message protocol:
 
+    * ``reset()``   → ``True``
+    * ``move()``    → ``True``
+    * ``observe()`` → alternating non-terminal states, then a terminal
+                      state (``current_player == "none"``)
+    * ``reward()``  → ``0`` for non-terminal steps, *reward* for
+                      the terminal step
+
+    With *n_steps* non-terminal pairs (one agent step + one opponent
+    step each) followed by one terminal agent step, the mock produces
+    exactly ``2 * n_steps + 2`` ``observe()`` calls (one after reset,
+    ``2 * n_steps`` for non-terminal steps, one terminal) and
+    ``2 * n_steps + 1`` ``reward()`` calls.
+    """
     env = TorchRLGoEnv(board_size=board_size)
     board = ["." * board_size for _ in range(board_size)]
     legal = [True] * (board_size * board_size + 1)
 
-    reset_resp = {
-        "board": board,
-        "current_player": "black",
-        "legal_moves": legal,
-    }
+    def make_obs_resp(player: str) -> dict[str, Any]:
+        return {"board": board, "current_player": player, "legal_moves": legal}
 
-    def make_step_resp(done: bool, r: float = 0.0) -> dict[str, Any]:
-        return {
-            "board": board,
-            "current_player": "white",
-            "legal_moves": legal,
-            "reward": r,
-            "done": done,
-        }
+    # observe() sequence: initial state after reset, then alternating
+    # non-terminal states, then a terminal state.
+    observe_responses: list[dict[str, Any]] = [make_obs_resp("black")]
+    for _ in range(n_steps):
+        observe_responses.append(make_obs_resp("white"))  # after agent step
+        observe_responses.append(make_obs_resp("black"))  # after opponent step
+    observe_responses.append(make_obs_resp("none"))  # terminal agent step
 
-    step_responses = [make_step_resp(False)] * n_steps + [
-        make_step_resp(True, reward)
-    ]
+    # reward() sequence: 0 for all non-terminal steps, final reward for
+    # the terminal step.  One reward() call per move() call.
+    reward_values: list[float] = [0.0] * (n_steps * 2) + [reward]
+
     mock_client = MagicMock()
-    mock_client.reset.return_value = reset_resp
-    mock_client.step.side_effect = step_responses
+    mock_client.reset.return_value = True
+    mock_client.move.return_value = True
+    mock_client.observe.side_effect = observe_responses
+    mock_client.reward.side_effect = reward_values
     env._client = mock_client
     return env
 
@@ -294,60 +304,29 @@ class TestModelOpponent:
 class TestBuiltinOpponent:
     """Tests for :class:`BuiltinOpponent`."""
 
-    def _make_mock_response(
-        self,
-        board_size: int = BOARD_SIZE,
-        action: int = 0,
-        done: bool = False,
-        reward: float = 0.0,
-    ) -> dict[str, Any]:
-        """Return a minimal server response as returned by builtin_step."""
-        board = ["." * board_size for _ in range(board_size)]
-        legal = [True] * (board_size * board_size + 1)
-        return {
-            "action": action,
-            "board": board,
-            "reward": reward,
-            "done": done,
-            "current_player": "black",
-            "legal_moves": legal,
-        }
-
-    def test_step_calls_client_builtin_step(self) -> None:
-        """step() must delegate to client.builtin_step with the bot name."""
+    def test_step_calls_client_move_builtin(self) -> None:
+        """step() must delegate to client.move_builtin with no arguments."""
         mock_client = MagicMock()
-        mock_client.builtin_step.return_value = self._make_mock_response()
+        mock_client.move_builtin.return_value = 0
         opp = BuiltinOpponent("easy", mock_client)
         opp.step()
-        mock_client.builtin_step.assert_called_once_with("easy")
+        mock_client.move_builtin.assert_called_once_with()
 
-    def test_step_returns_server_response(self) -> None:
-        """step() must return the dict returned by client.builtin_step."""
+    def test_step_returns_action_int(self) -> None:
+        """step() must return the integer action returned by client.move_builtin."""
         mock_client = MagicMock()
-        response = self._make_mock_response(action=7)
-        mock_client.builtin_step.return_value = response
+        mock_client.move_builtin.return_value = 7
         opp = BuiltinOpponent("medium", mock_client)
         result = opp.step()
-        assert result is response
+        assert result == 7
 
-    def test_step_returns_action_in_response(self) -> None:
-        """The response dict returned by step() must contain 'action'."""
+    def test_step_returns_pass_action(self) -> None:
+        """step() must return the PASS action index when the bot plays PASS."""
         mock_client = MagicMock()
-        mock_client.builtin_step.return_value = self._make_mock_response(
-            action=12
-        )
+        mock_client.move_builtin.return_value = BOARD_SIZE * BOARD_SIZE
         opp = BuiltinOpponent("hard", mock_client)
         result = opp.step()
-        assert result["action"] == 12
-
-    def test_step_response_contains_game_state_keys(self) -> None:
-        """Response must contain board, reward, done, current_player, legal_moves."""
-        mock_client = MagicMock()
-        mock_client.builtin_step.return_value = self._make_mock_response()
-        opp = BuiltinOpponent("easy", mock_client)
-        result = opp.step()
-        for key in ("board", "reward", "done", "current_player", "legal_moves"):
-            assert key in result, f"response missing key '{key}'"
+        assert result == BOARD_SIZE * BOARD_SIZE
 
     def test_step_does_not_send_state_to_server(self) -> None:
         """step() must not accept or forward any board-state argument.
@@ -355,13 +334,13 @@ class TestBuiltinOpponent:
         The IPvGO API is server-driven: the server knows the current state.
         """
         mock_client = MagicMock()
-        mock_client.builtin_step.return_value = self._make_mock_response()
+        mock_client.move_builtin.return_value = 0
         opp = BuiltinOpponent("easy", mock_client)
         opp.step()
-        # builtin_step must be called with only the bot name - no state
-        call_args = mock_client.builtin_step.call_args
-        assert call_args == (("easy",), {}), (
-            f"builtin_step called with unexpected args: {call_args}"
+        # move_builtin must be called with no arguments - no state forwarded
+        call_args = mock_client.move_builtin.call_args
+        assert call_args == ((), {}), (
+            f"move_builtin called with unexpected args: {call_args}"
         )
 
     def test_builtin_has_no_act_method(self) -> None:
@@ -411,28 +390,218 @@ class TestBuiltinOpponent:
 
 
 # ---------------------------------------------------------------------------
-# GoClient.builtin_step
+# GoClient new API
 # ---------------------------------------------------------------------------
 
 
-class TestGoClientBuiltinStep:
-    """Tests for the builtin_step stub on GoClient."""
+class TestGoClientNewAPI:
+    """Tests for the new GoClient message protocol."""
 
-    def test_raises_not_implemented(self) -> None:
-        """builtin_step must raise NotImplementedError (not yet impl)."""
+    def test_reset_raises_on_missing_success(self) -> None:
+        """reset() must raise ValueError if response lacks 'success'."""
+        from unittest.mock import patch
+
         from src.env.client import GoClient
 
         client = GoClient()
-        with pytest.raises(NotImplementedError, match="builtin_step"):
-            client.builtin_step("easy")
+        with patch.object(
+            client, "_request", return_value={"unexpected": True}
+        ):
+            with pytest.raises(ValueError, match="success"):
+                client.reset("no-ai", 9)
 
-    def test_error_message_contains_bot_name(self) -> None:
-        """Error message must include the bot name."""
+    def test_move_raises_on_missing_success(self) -> None:
+        """move() must raise ValueError if response lacks 'success'."""
+        from unittest.mock import patch
+
         from src.env.client import GoClient
 
         client = GoClient()
-        with pytest.raises(NotImplementedError, match="medium"):
-            client.builtin_step("medium")
+        with patch.object(client, "_request", return_value={"foo": 1}):
+            with pytest.raises(ValueError, match="success"):
+                client.move(0)
+
+    def test_observe_raises_on_missing_key(self) -> None:
+        """observe() must raise ValueError if a required key is absent."""
+        from unittest.mock import patch
+
+        from src.env.client import GoClient
+
+        client = GoClient()
+        # Missing "legal_moves"
+        with patch.object(
+            client,
+            "_request",
+            return_value={"board": [], "current_player": "black"},
+        ):
+            with pytest.raises(ValueError, match="legal_moves"):
+                client.observe()
+
+    def test_reward_raises_on_missing_reward(self) -> None:
+        """reward() must raise ValueError if response lacks 'reward'."""
+        from unittest.mock import patch
+
+        from src.env.client import GoClient
+
+        client = GoClient()
+        with patch.object(client, "_request", return_value={"other": 1}):
+            with pytest.raises(ValueError, match="reward"):
+                client.reward("black")
+
+    def test_move_builtin_raises_on_missing_action(self) -> None:
+        """move_builtin() must raise ValueError if response lacks 'action'."""
+        from unittest.mock import patch
+
+        from src.env.client import GoClient
+
+        client = GoClient()
+        with patch.object(client, "_request", return_value={"other": 1}):
+            with pytest.raises(ValueError, match="action"):
+                client.move_builtin()
+
+    def test_reset_returns_bool(self) -> None:
+        """reset() must return True when server responds with success=True."""
+        from unittest.mock import patch
+
+        from src.env.client import GoClient
+
+        client = GoClient()
+        with patch.object(
+            client, "_request", return_value={"success": True}
+        ):
+            result = client.reset("no-ai", 9)
+        assert result is True
+
+    def test_move_returns_bool(self) -> None:
+        """move() must return True when server responds with success=True."""
+        from unittest.mock import patch
+
+        from src.env.client import GoClient
+
+        client = GoClient()
+        with patch.object(
+            client, "_request", return_value={"success": True}
+        ):
+            result = client.move(5)
+        assert result is True
+
+    def test_observe_returns_dict(self) -> None:
+        """observe() must return the full response dict from the server."""
+        from unittest.mock import patch
+
+        from src.env.client import GoClient
+
+        client = GoClient()
+        expected = {
+            "board": [".....", "....."],
+            "current_player": "black",
+            "legal_moves": [True] * 26,
+        }
+        with patch.object(client, "_request", return_value=expected):
+            result = client.observe()
+        assert result == expected
+
+    def test_reward_returns_int(self) -> None:
+        """reward() must return an integer reward value."""
+        from unittest.mock import patch
+
+        from src.env.client import GoClient
+
+        client = GoClient()
+        with patch.object(
+            client, "_request", return_value={"reward": 1}
+        ):
+            result = client.reward("black")
+        assert result == 1
+        assert isinstance(result, int)
+
+    def test_move_builtin_returns_int(self) -> None:
+        """move_builtin() must return the integer action from the server."""
+        from unittest.mock import patch
+
+        from src.env.client import GoClient
+
+        client = GoClient()
+        with patch.object(
+            client, "_request", return_value={"action": 12}
+        ):
+            result = client.move_builtin()
+        assert result == 12
+        assert isinstance(result, int)
+
+    def test_reset_sends_correct_payload(self) -> None:
+        """reset() must send the correct JSON payload to the server."""
+        from unittest.mock import patch
+
+        from src.env.client import GoClient
+
+        client = GoClient()
+        with patch.object(
+            client, "_request", return_value={"success": True}
+        ) as mock_request:
+            client.reset("easy", 7)
+        mock_request.assert_called_once_with(
+            {"type": "reset", "opponent": "easy", "board_size": 7}
+        )
+
+    def test_move_sends_correct_payload(self) -> None:
+        """move() must send the correct JSON payload to the server."""
+        from unittest.mock import patch
+
+        from src.env.client import GoClient
+
+        client = GoClient()
+        with patch.object(
+            client, "_request", return_value={"success": True}
+        ) as mock_request:
+            client.move(42)
+        mock_request.assert_called_once_with({"type": "move", "action": 42})
+
+    def test_observe_sends_correct_payload(self) -> None:
+        """observe() must send {\"type\": \"observe\"} to the server."""
+        from unittest.mock import patch
+
+        from src.env.client import GoClient
+
+        client = GoClient()
+        obs_response = {
+            "board": [],
+            "current_player": "black",
+            "legal_moves": [],
+        }
+        with patch.object(
+            client, "_request", return_value=obs_response
+        ) as mock_request:
+            client.observe()
+        mock_request.assert_called_once_with({"type": "observe"})
+
+    def test_reward_sends_correct_payload(self) -> None:
+        """reward() must send the correct JSON payload including the player."""
+        from unittest.mock import patch
+
+        from src.env.client import GoClient
+
+        client = GoClient()
+        with patch.object(
+            client, "_request", return_value={"reward": 1}
+        ) as mock_request:
+            client.reward("white")
+        mock_request.assert_called_once_with(
+            {"type": "reward", "player": "white"}
+        )
+
+    def test_move_builtin_sends_correct_payload(self) -> None:
+        """move_builtin() must send {\"type\": \"move_builtin\"} to the server."""
+        from unittest.mock import patch
+
+        from src.env.client import GoClient
+
+        client = GoClient()
+        with patch.object(
+            client, "_request", return_value={"action": 0}
+        ) as mock_request:
+            client.move_builtin()
+        mock_request.assert_called_once_with({"type": "move_builtin"})
 
 
 # ---------------------------------------------------------------------------
@@ -684,19 +853,15 @@ class TestPlayEpisode:
 
         env = TorchRLGoEnv(board_size=BOARD_SIZE)
         env_mock_client = MagicMock()
-        env_mock_client.reset.return_value = {
-            "board": board,
-            "current_player": "black",
-            "legal_moves": legal,
-        }
+        env_mock_client.reset.return_value = True
         # Episode ends on agent's first step so builtin never needs to move.
-        env_mock_client.step.return_value = {
-            "board": board,
-            "current_player": "white",
-            "legal_moves": legal,
-            "reward": 1.0,
-            "done": True,
-        }
+        # observe(): initial state after reset, then terminal after agent move.
+        env_mock_client.observe.side_effect = [
+            {"board": board, "current_player": "black", "legal_moves": legal},
+            {"board": board, "current_player": "none", "legal_moves": legal},
+        ]
+        env_mock_client.move.return_value = True
+        env_mock_client.reward.return_value = 1
         env._client = env_mock_client
 
         builtin_client = MagicMock()
@@ -715,18 +880,13 @@ class TestPlayEpisode:
 
             env = TorchRLGoEnv(board_size=BOARD_SIZE)
             env_mock_client = MagicMock()
-            env_mock_client.reset.return_value = {
-                "board": board,
-                "current_player": "black",
-                "legal_moves": legal,
-            }
-            env_mock_client.step.return_value = {
-                "board": board,
-                "current_player": "white",
-                "legal_moves": legal,
-                "reward": 1.0,
-                "done": True,
-            }
+            env_mock_client.reset.return_value = True
+            env_mock_client.observe.side_effect = [
+                {"board": board, "current_player": "black", "legal_moves": legal},
+                {"board": board, "current_player": "none", "legal_moves": legal},
+            ]
+            env_mock_client.move.return_value = True
+            env_mock_client.reward.return_value = 1
             env._client = env_mock_client
 
             builtin_client = MagicMock()
@@ -739,10 +899,10 @@ class TestPlayEpisode:
             )
 
     def test_builtin_opponent_step_called_not_env_step(self) -> None:
-        """For BuiltinOpponent, step() is called; env._step is not called for opponent's turn.
+        """For BuiltinOpponent, step() is called; env move() is not called for opponent.
 
-        The game state is already advanced by builtin_step on the server,
-        so play_episode must use env._encode_step_response instead of
+        The game state is already advanced by move_builtin on the server,
+        so play_episode must use env._observe_state() instead of
         calling env._step for the opponent's move.
         """
         actor, _ = _make_actor_critic()
@@ -754,43 +914,36 @@ class TestPlayEpisode:
 
         env = TorchRLGoEnv(board_size=BOARD_SIZE)
         env_mock_client = MagicMock()
-        env_mock_client.reset.return_value = {
-            "board": board,
-            "current_player": "black",
-            "legal_moves": legal,
-        }
-        # Agent's first step: non-terminal
-        env_mock_client.step.return_value = {
-            "board": board,
-            "current_player": "white",
-            "legal_moves": legal,
-            "reward": 0.0,
-            "done": False,
-        }
+        env_mock_client.reset.return_value = True
+        # observe() sequence:
+        #   1. after reset: initial state
+        #   2. after agent's move: non-terminal
+        #   3. after builtin's move (via _observe_state): terminal
+        env_mock_client.observe.side_effect = [
+            {"board": board, "current_player": "black", "legal_moves": legal},
+            {"board": board, "current_player": "white", "legal_moves": legal},
+            {"board": board, "current_player": "none", "legal_moves": legal},
+        ]
+        env_mock_client.move.return_value = True
+        # reward() sequence: 0.0 for agent's non-terminal, 1.0 for terminal
+        env_mock_client.reward.side_effect = [0.0, 1.0]
         env._client = env_mock_client
 
-        # BuiltinOpponent with its own mocked client whose builtin_step
+        # BuiltinOpponent with its own mocked client whose move_builtin
         # terminates the episode.
         builtin_client = MagicMock()
-        builtin_client.builtin_step.return_value = {
-            "action": BOARD_SIZE * BOARD_SIZE,  # PASS
-            "board": board,
-            "current_player": "black",
-            "legal_moves": legal,
-            "reward": 1.0,
-            "done": True,
-        }
+        builtin_client.move_builtin.return_value = BOARD_SIZE * BOARD_SIZE  # PASS
         opp = BuiltinOpponent("easy", builtin_client)
 
         result = play_episode(env, actor, opp, BOARD_SIZE)
 
-        # builtin_step must have been called once (for the opponent's turn).
-        builtin_client.builtin_step.assert_called_once_with("easy")
+        # move_builtin must have been called once (for the opponent's turn).
+        builtin_client.move_builtin.assert_called_once_with()
 
-        # env._step must have been called ONLY for the agent's turn (once),
+        # env move() must have been called ONLY for the agent's turn (once),
         # NOT for the opponent's turn.
-        assert env_mock_client.step.call_count == 1, (
-            f"env._step called {env_mock_client.step.call_count} times; "
+        assert env_mock_client.move.call_count == 1, (
+            f"env.move() called {env_mock_client.move.call_count} times; "
             f"expected 1 (agent turn only)"
         )
 
@@ -815,17 +968,9 @@ def _make_builtin_mock(
     the agent's first step terminates the episode.  The mock is still set up
     correctly so that tests which DO reach the opponent turn will work.
     """
-    board = ["." * board_size for _ in range(board_size)]
-    legal = [True] * (board_size * board_size + 1)
     mock_client = MagicMock()
-    mock_client.builtin_step.return_value = {
-        "action": board_size * board_size,  # PASS
-        "board": board,
-        "reward": 0.0,
-        "done": True,
-        "current_player": "black",
-        "legal_moves": legal,
-    }
+    # move_builtin() returns the PASS action index when the builtin plays.
+    mock_client.move_builtin.return_value = board_size * board_size  # PASS
     return BuiltinOpponent("easy", mock_client)
 
 
