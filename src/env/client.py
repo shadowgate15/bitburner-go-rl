@@ -98,3 +98,47 @@ class GoClient:
         return self._run(  # type: ignore[return-value]
             self._send_recv({"type": "step", "action": action})
         )
+
+    def get_builtin_move(
+        self, bot_name: str, state: dict[str, Any]
+    ) -> int:
+        """Request a move from a built-in IPvGO bot via the server.
+
+        Sends a ``builtin_move`` request to the server, asking the
+        named bot to choose an action given the current game *state*.
+        The server should respond with a single ``action`` integer.
+
+        Args:
+            bot_name: Name of the built-in bot, e.g. ``"easy"``,
+                ``"medium"``, or ``"hard"``.
+            state: Current game state dict as returned by
+                :meth:`reset` or :meth:`step`.  Must contain at
+                minimum ``"board"``, ``"current_player"``, and
+                ``"legal_moves"``.
+
+        Returns:
+            Integer action index chosen by the bot.
+
+        Raises:
+            NotImplementedError: Always - the server-side API for
+                built-in bot moves has not yet been finalised.
+
+        Todo:
+            Implement once the WebSocket server exposes a
+            ``builtin_move`` message type.  Expected wire format::
+
+                send: {
+                    "type": "builtin_move",
+                    "bot": "<bot_name>",
+                    "board": <list[str]>,
+                    "current_player": "black"|"white",
+                    "legal_moves": <list[bool]>
+                }
+                recv: {"action": <int>}
+        """
+        # TODO: implement once WebSocket API details are confirmed.
+        raise NotImplementedError(
+            f"get_builtin_move is not yet implemented for bot "
+            f"'{bot_name}'.  The WebSocket server API for built-in "
+            f"bot moves needs to be defined and deployed."
+        )
