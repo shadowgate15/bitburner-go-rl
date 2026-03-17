@@ -361,6 +361,8 @@ class TorchRLGoEnv(EnvBase):
         current_player: str = obs_data.get("current_player", "black")
         legal_moves: list[bool] = obs_data["legal_moves"]
         done: bool = current_player == "none"
+        # Convert to float for the float32 reward tensor; the server
+        # returns int rewards but PyTorch tensors require float.
         reward: float = float(self.client.reward(player))
 
         obs = encode_board(

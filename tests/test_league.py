@@ -105,7 +105,7 @@ def _make_env_with_mock(
 
     # reward() sequence: 0 for all non-terminal steps, final reward for
     # the terminal step.  One reward() call per move() call.
-    reward_values: list[float] = [0.0] * (n_steps * 2) + [reward]
+    reward_values: list[int] = [0] * (n_steps * 2) + [int(reward)]
 
     mock_client = MagicMock()
     mock_client.reset.return_value = True
@@ -558,7 +558,7 @@ class TestGoClientNewAPI:
         mock_request.assert_called_once_with({"type": "move", "action": 42})
 
     def test_observe_sends_correct_payload(self) -> None:
-        """observe() must send {\"type\": \"observe\"} to the server."""
+        """observe() must send {'type': 'observe'} to the server."""
         from unittest.mock import patch
 
         from src.env.client import GoClient
@@ -591,7 +591,7 @@ class TestGoClientNewAPI:
         )
 
     def test_move_builtin_sends_correct_payload(self) -> None:
-        """move_builtin() must send {\"type\": \"move_builtin\"} to the server."""
+        """move_builtin() must send {'type': 'move_builtin'} to the server."""
         from unittest.mock import patch
 
         from src.env.client import GoClient
