@@ -12,12 +12,12 @@ repos:
       args: [ --config=pyproject.toml ]
       files: ^src/
 
-- repo: https://github.com/pre-commit/mirrors-mypy
-  rev: v1.19.1
+- repo: https://github.com/RobertCraigie/pyright-python
+  rev: v1.1.408
   hooks:
-    # Run mypy type checking.
-    - id: mypy
-      args: [--config-file=pyproject.toml ]
+    # Run pyright type checking.
+    - id: pyright
+      args: [--project=pyproject.toml]
       files: ^src/
 
 - repo: local

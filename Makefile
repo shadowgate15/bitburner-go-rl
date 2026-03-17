@@ -31,7 +31,7 @@ format: ## Format the code
 	$(ur) ruff format --config=pyproject.toml ./src/
 
 typecheck: ## Run the type checker
-	$(ur) mypy --config-file=pyproject.toml ./src/
+	$(ur) pyright --project=pyproject.toml ./src/
 
 dev-logs: ## View development container logs
 	$(d) logs -f $(DOCKER_DEV_CONTAINER_NAME)
@@ -57,7 +57,7 @@ dev-down: ## Stop and remove the development container
 
 clean: ## Clean up the project (cache)
 	find . -type d -name '__pycache__' -exec rm -rf {} +
-	rm -rf .mypy_cache .ruff_cache .pytest_cache
+	rm -rf .pyright .ruff_cache .pytest_cache
 
 ##@ Production
 prod-build: ## Build the production Docker image

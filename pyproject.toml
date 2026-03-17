@@ -15,7 +15,7 @@ dependencies = [
 [dependency-groups]
 dev = [
   "commitizen>=4.8.2",
-  "mypy>=1.16.0",
+  "pyright>=1.1.0",
   "pre-commit>=4.2.0",
   "pytest>=8.3.5",
   "pytest-asyncio>=1.0.0",
@@ -85,11 +85,10 @@ quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
 
-# ================================= MYPY
-[tool.mypy]
-strict = true                 # Enable strict type checking
-explicit_package_bases = true
-ignore_missing_imports = true # Ignore missing imports for third-party libraries
+# ================================= PYRIGHT
+[tool.pyright]
+typeCheckingMode = "strict"          # Enable strict type checking
+reportMissingModuleSource = "none"   # Ignore missing source for third-party stubs
 
 # ================================= COMMITIZEN
 [tool.commitizen]
