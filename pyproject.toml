@@ -1,28 +1,36 @@
 [project]
-name = "python-boilerplate"
+name = "bitburner-go-rl"
 version = "0.10.0"
 description = "A template for quickly starting new projects in Python "
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "environs>=14.2.0",
-    "tensordict>=0.11.0",
-    "torch>=2.10.0",
-    "torchrl>=0.11.0",
-    "websockets>=13.0",
+  "environs>=14.2.0",
+  "tensordict>=0.11.0",
+  "torch>=2.10.0",
+  "torchrl>=0.11.0",
+  "websockets>=13.0",
 ]
 
 [dependency-groups]
 dev = [
-    "commitizen>=4.8.2",
-    "mypy>=1.16.0",
-    "pre-commit>=4.2.0",
-    "pytest>=8.3.5",
-    "pytest-asyncio>=1.0.0",
-    "ruff>=0.11.11",
-    "mkdocs>=1.6.1",
-    "mkdocs-material>=9.6.14",
+  "commitizen>=4.8.2",
+  "mypy>=1.16.0",
+  "pre-commit>=4.2.0",
+  "pytest>=8.3.5",
+  "pytest-asyncio>=1.0.0",
+  "ruff>=0.11.11",
+  "mkdocs>=1.6.1",
+  "mkdocs-material>=9.6.14",
 ]
+
+[build-system]
+requires = ["uv_build>=0.10.9,<0.11.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "src"
+module-root = ""
 
 # ================================= RUFF
 [tool.ruff]
@@ -37,17 +45,17 @@ exclude = [".venv", "venv", "__pycache__", "migrations", "build", "dist"]
 [tool.ruff.lint]
 # Enable rules
 select = [
-    "E",   # pycodestyle errors
-    "W",   # pycodestyle warnings
-    "F",   # pyflakes
-    "N",   # pep8-naming
-    "D",   # pydocstyle
-    "UP",  # pyupgrade
-    "I",   # isort
-    "B",   # flake8-bugbear
-    "C4",  # flake8-comprehensions
-    "SIM", # flake8-simplify
-    "RUF", # Ruff-specific rules
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "N",   # pep8-naming
+  "D",   # pydocstyle
+  "UP",  # pyupgrade
+  "I",   # isort
+  "B",   # flake8-bugbear
+  "C4",  # flake8-comprehensions
+  "SIM", # flake8-simplify
+  "RUF", # Ruff-specific rules
 ]
 
 # Ignore rules
@@ -64,11 +72,11 @@ convention = "google"
 [tool.ruff.lint.isort]
 known-first-party = ["src"]
 section-order = [
-    "future",
-    "standard-library",
-    "third-party",
-    "first-party",
-    "local-folder",
+  "future",
+  "standard-library",
+  "third-party",
+  "first-party",
+  "local-folder",
 ]
 
 # Formatting options
