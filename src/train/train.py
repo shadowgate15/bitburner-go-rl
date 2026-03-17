@@ -76,6 +76,9 @@ class TrainConfig:
         log_interval: Print statistics every N iterations.
         save_interval: Save a checkpoint every N iterations.
         checkpoint_dir: Directory for model checkpoints.
+        load_checkpoint: Path to a checkpoint file to resume training from.
+            When set, actor, critic, and optimizer states are restored and
+            the iteration counter resumes from the checkpoint's saved value.
     """
 
     # ---- Environment ----
@@ -110,6 +113,7 @@ class TrainConfig:
     log_interval: int = 1
     save_interval: int = 10
     checkpoint_dir: str = "checkpoints"
+    load_checkpoint: str | None = None
 
     # Internal: populated by build_network() / train()
     _extra: dict = field(default_factory=dict, repr=False)
@@ -298,7 +302,21 @@ def train(cfg: TrainConfig | None = None) -> None:
     optimizer = torch.optim.Adam(all_params, lr=cfg.lr)
 
     # ------------------------------------------------------------------
-    # 7. Data collector
+    # 7. Load checkpoint (optional)
+    # ------------------------------------------------------------------
+    start_iter = 0
+    if cfg.load_checkpoint is not None:
+        ckpt_path = Path(cfg.load_checkpoint)
+        print(f"[train] Loading checkpoint from {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        actor.load_state_dict(ckpt["actor_state_dict"])
+        critic.load_state_dict(ckpt["critic_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        start_iter = ckpt["iter"]
+        print(f"[train] Resumed from iteration {start_iter}.")
+
+    # ------------------------------------------------------------------
+    # 8. Data collector
     # ------------------------------------------------------------------
     # create_env_fn must be a callable so that SyncDataCollector can
     # instantiate (and optionally recreate) the environment internally.
@@ -317,7 +335,7 @@ def train(cfg: TrainConfig | None = None) -> None:
     )
 
     # ------------------------------------------------------------------
-    # 8. Replay buffer (on-policy: cleared each iteration)
+    # 9. Replay buffer (on-policy: cleared each iteration)
     # ------------------------------------------------------------------
     replay_buffer = ReplayBuffer(
         storage=LazyTensorStorage(
@@ -329,16 +347,16 @@ def train(cfg: TrainConfig | None = None) -> None:
     )
 
     # ------------------------------------------------------------------
-    # 9. Checkpointing setup
+    # 10. Checkpointing setup
     # ------------------------------------------------------------------
     ckpt_dir = Path(cfg.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
     # ------------------------------------------------------------------
-    # 10. Training loop
+    # 11. Training loop
     # ------------------------------------------------------------------
     total_iters = cfg.total_frames // cfg.frames_per_batch
-    iter_idx = 0
+    iter_idx = start_iter
     t0 = time.time()
 
     print(
@@ -594,6 +612,15 @@ def _parse_args() -> TrainConfig:
         default="checkpoints",
         help="Directory for model checkpoints.",
     )
+    parser.add_argument(
+        "--load-checkpoint",
+        type=str,
+        default=None,
+        help=(
+            "Path to a checkpoint file (.pt) to resume training from. "
+            "Restores actor, critic, and optimizer state."
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -617,6 +644,7 @@ def _parse_args() -> TrainConfig:
         log_interval=args.log_interval,
         save_interval=args.save_interval,
         checkpoint_dir=args.checkpoint_dir,
+        load_checkpoint=args.load_checkpoint,
     )
 
 
