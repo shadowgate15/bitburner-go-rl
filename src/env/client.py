@@ -32,7 +32,7 @@ class GoClient:
         7, 9, or 13).
 
     move         →
-        send: ``{"type": "move", "action": <int>}``
+        send: ``{"type": "move", "action": <int>, "player": "black"|"white"}``
         recv: ``{"success": <bool>}``
 
     observe      →
@@ -140,12 +140,16 @@ class GoClient:
             )
         return bool(response["success"])
 
-    def move(self, action: int) -> bool:
+    def move(self, action: int, player: str = "black") -> bool:
         """Send *action* to the server and advance the game state.
 
         Args:
             action: Integer action index.  Values in ``[0, board_size**2)``
                 place a stone; the last index (``board_size**2``) is PASS.
+            player: ``"black"`` or ``"white"``.  Indicates which player
+                is making the move.  The learning agent always plays as
+                ``"black"``; non-builtin opponents play as ``"white"``.
+                Defaults to ``"black"``.
 
         Returns:
             ``True`` if the server accepted the move.
@@ -154,7 +158,9 @@ class GoClient:
             ValueError: If the server response is missing the
                 ``"success"`` key.
         """
-        response = self._request({"type": "move", "action": action})
+        response = self._request(
+            {"type": "move", "action": action, "player": player}
+        )
         if "success" not in response:
             raise ValueError(
                 f"move: malformed server response, missing 'success' key: "

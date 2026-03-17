@@ -291,14 +291,16 @@ class TorchRLGoEnv(EnvBase):
             batch_size=[],
         )
 
-    def _step(self, tensordict: TensorDict) -> TensorDict:
+    def _step(
+        self, tensordict: TensorDict, player: str = "black"
+    ) -> TensorDict:
         """Advance the environment by one step.
 
         Extracts the action from *tensordict*, sends it to the Bitburner
-        server via :meth:`~src.env.client.GoClient.move`, fetches the
-        updated game state via :meth:`~src.env.client.GoClient.observe`,
-        and retrieves the reward via
-        :meth:`~src.env.client.GoClient.reward`.
+        server via :meth:`~src.env.client.GoClient.move` (including the
+        *player* that is moving), fetches the updated game state via
+        :meth:`~src.env.client.GoClient.observe`, and retrieves the
+        agent's reward via :meth:`~src.env.client.GoClient.reward`.
 
         The episode is considered done when the server reports
         ``current_player == "none"`` in the observation response.
@@ -306,6 +308,10 @@ class TorchRLGoEnv(EnvBase):
         Args:
             tensordict: Input dict that **must** contain key ``"action"``
                 (a scalar integer tensor).
+            player: ``"black"`` or ``"white"``.  Indicates which player
+                is making this move.  The learning agent always moves as
+                ``"black"`` (the default); non-builtin opponents move as
+                ``"white"``.
 
         Returns:
             TensorDict with keys ``"observation"``, ``"reward"``, and
@@ -313,12 +319,15 @@ class TorchRLGoEnv(EnvBase):
         """
         action: int = int(tensordict["action"].item())
 
-        success = self.client.move(action)
+        success = self.client.move(action, player)
         if not success:
             raise RuntimeError(
                 f"Server rejected move {action}"
             )
 
+        # Always fetch the agent's (black's) reward, regardless of who
+        # made this move.  The learning agent is always black, so the
+        # reward signal is always from black's perspective.
         return self._observe_state()
 
     def _set_seed(self, seed: int | None) -> None:

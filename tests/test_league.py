@@ -545,7 +545,7 @@ class TestGoClientNewAPI:
         )
 
     def test_move_sends_correct_payload(self) -> None:
-        """move() must send the correct JSON payload to the server."""
+        """move() must send the correct JSON payload including the player."""
         from unittest.mock import patch
 
         from src.env.client import GoClient
@@ -554,8 +554,40 @@ class TestGoClientNewAPI:
         with patch.object(
             client, "_request", return_value={"success": True}
         ) as mock_request:
-            client.move(42)
-        mock_request.assert_called_once_with({"type": "move", "action": 42})
+            client.move(42, "black")
+        mock_request.assert_called_once_with(
+            {"type": "move", "action": 42, "player": "black"}
+        )
+
+    def test_move_sends_white_player(self) -> None:
+        """move() with player='white' must include 'white' in the payload."""
+        from unittest.mock import patch
+
+        from src.env.client import GoClient
+
+        client = GoClient()
+        with patch.object(
+            client, "_request", return_value={"success": True}
+        ) as mock_request:
+            client.move(7, "white")
+        mock_request.assert_called_once_with(
+            {"type": "move", "action": 7, "player": "white"}
+        )
+
+    def test_move_defaults_to_black_player(self) -> None:
+        """move() with no player arg must default to 'black' in the payload."""
+        from unittest.mock import patch
+
+        from src.env.client import GoClient
+
+        client = GoClient()
+        with patch.object(
+            client, "_request", return_value={"success": True}
+        ) as mock_request:
+            client.move(0)
+        mock_request.assert_called_once_with(
+            {"type": "move", "action": 0, "player": "black"}
+        )
 
     def test_observe_sends_correct_payload(self) -> None:
         """observe() must send {'type': 'observe'} to the server."""
@@ -950,6 +982,46 @@ class TestPlayEpisode:
         # Episode must have ended with the builtin's reward.
         assert result["won"] is True
         assert result["total_reward"] == pytest.approx(1.0)
+
+    @staticmethod
+    def _get_move_player(call: Any) -> str:
+        """Extract the player argument from a mock call to client.move."""
+        return call.args[1] if len(call.args) > 1 else call.kwargs.get("player")
+
+    def test_agent_move_uses_black_player(self) -> None:
+        """play_episode must call client.move with player='black' for agent turns."""
+        actor, _ = _make_actor_critic()
+        # n_steps=1 → one full round (agent + opponent), then terminal agent step.
+        # Call order: agent(black)[0], opponent(white)[1], agent(black)[2].
+        env = _make_env_with_mock(n_steps=1, reward=1.0)
+        n_actions = BOARD_SIZE * BOARD_SIZE + 1
+        opp = RandomOpponent(n_actions)
+        play_episode(env, actor, opp, BOARD_SIZE)
+
+        calls = env._client.move.call_args_list  # type: ignore[union-attr]
+        # Agent moves are at even indices (0, 2); check they use "black".
+        for idx in (0, 2):
+            player_arg = self._get_move_player(calls[idx])
+            assert player_arg == "black", (
+                f"Call [{idx}] expected player='black', got {player_arg!r}"
+            )
+
+    def test_opponent_move_uses_white_player(self) -> None:
+        """play_episode must call client.move with player='white' for non-builtin opponent turns."""
+        actor, _ = _make_actor_critic()
+        # n_steps=1 → one round with one opponent move, then terminal agent step.
+        # Call order: agent(black)[0], opponent(white)[1], agent(black)[2].
+        env = _make_env_with_mock(n_steps=1, reward=1.0)
+        n_actions = BOARD_SIZE * BOARD_SIZE + 1
+        opp = RandomOpponent(n_actions)
+        play_episode(env, actor, opp, BOARD_SIZE)
+
+        calls = env._client.move.call_args_list  # type: ignore[union-attr]
+        # Second call is the opponent's move - must be "white".
+        opp_player = self._get_move_player(calls[1])
+        assert opp_player == "white", (
+            f"Expected player='white' for opponent move, got {opp_player!r}"
+        )
 
 
 # ---------------------------------------------------------------------------

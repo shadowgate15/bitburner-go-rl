@@ -141,7 +141,8 @@ def play_episode(
             TensorDict(
                 {"action": torch.tensor(agent_action, dtype=torch.int64)},
                 batch_size=[],
-            )
+            ),
+            player="black",
         )
 
         obs = step_td["observation"]
@@ -168,7 +169,8 @@ def play_episode(
                 TensorDict(
                     {"action": torch.tensor(opp_action, dtype=torch.int64)},
                     batch_size=[],
-                )
+                ),
+                player="white",
             )
 
         obs = opp_td["observation"]

@@ -327,10 +327,10 @@ class TestTorchRLGoEnvStep:
         assert td["done"].item() is False
 
     def test_step_passes_action_to_client(self) -> None:
-        """_step must forward the action integer to client.move."""
+        """_step must forward the action integer and player to client.move."""
         env = self._make_env_with_mock_client()
         env._step(_make_action_td(action=7))
-        env._client.move.assert_called_once_with(7)  # type: ignore[union-attr]
+        env._client.move.assert_called_once_with(7, "black")  # type: ignore[union-attr]
 
     def test_pass_action_index(self) -> None:
         """The PASS action (last index) should be forwarded to the client."""
@@ -338,8 +338,14 @@ class TestTorchRLGoEnvStep:
         pass_action = BOARD_SIZE * BOARD_SIZE  # last valid action
         env._step(_make_action_td(action=pass_action))
         env._client.move.assert_called_once_with(  # type: ignore[union-attr]
-            pass_action
+            pass_action, "black"
         )
+
+    def test_step_white_player_forwarded(self) -> None:
+        """_step with player='white' must forward 'white' to client.move."""
+        env = self._make_env_with_mock_client()
+        env._step(_make_action_td(action=3), player="white")
+        env._client.move.assert_called_once_with(3, "white")  # type: ignore[union-attr]
 
 
 class TestTorchRLGoEnvHelpers:
