@@ -68,7 +68,7 @@ class BuiltinOpponent:
 
     Delegates move selection **and game-state advancement** to the
     Bitburner IPvGO server by calling
-    :meth:`~src.env.client.GoClient.builtin_step`.
+    :meth:`~src.env.client.GoClient.move_builtin`.
 
     Unlike :class:`RandomOpponent` and :class:`ModelOpponent`, which
     only *choose* an action and leave state advancement to the
@@ -78,6 +78,10 @@ class BuiltinOpponent:
     therefore **already advanced** when :meth:`step` returns, so the
     caller must **not** call :meth:`~src.env.go_env.TorchRLGoEnv._step`
     for the same turn.
+
+    After calling :meth:`step`, the caller should use
+    :meth:`~src.env.go_env.TorchRLGoEnv._observe_state` to fetch the
+    updated game state.
 
     The opponent is stateless between episodes; call :meth:`reset` at
     the start of each game if any per-episode server state needs to be
@@ -100,36 +104,23 @@ class BuiltinOpponent:
         self.bot_name = bot_name
         self._client = client
 
-    def step(self) -> dict[str, Any]:
+    def step(self) -> int:
         """Tell the server to have the bot play its move.
 
-        Calls :meth:`~src.env.client.GoClient.builtin_step`, which
-        instructs the named bot to choose and execute its move on the
-        server.  The game state is advanced **server-side** before this
-        method returns.
+        Calls :meth:`~src.env.client.GoClient.move_builtin`, which
+        instructs the configured bot to choose and execute its move on
+        the server.  The game state is advanced **server-side** before
+        this method returns.
 
-        The caller (:func:`~src.league.rollout.play_episode`) must use
-        the returned response to update its local state observation and
-        must **not** send a subsequent
+        The caller (:func:`~src.league.rollout.play_episode`) should
+        use :meth:`~src.env.go_env.TorchRLGoEnv._observe_state` to
+        fetch the updated game state and must **not** send a subsequent
         :meth:`~src.env.go_env.TorchRLGoEnv._step` for the same turn.
 
         Returns:
-            Server response dict with keys:
-
-            * ``"action"``         - int action index the bot played.
-            * ``"board"``          - updated board strings.
-            * ``"reward"``         - float reward signal.
-            * ``"done"``           - bool episode-termination flag.
-            * ``"current_player"`` - ``"black"`` or ``"white"``.
-            * ``"legal_moves"``    - updated flat boolean legality list.
-
-        Note:
-            This method calls
-            :meth:`~src.env.client.GoClient.builtin_step` which
-            raises :exc:`NotImplementedError` until the WebSocket API
-            for built-in bot steps is implemented on the server side.
+            Integer action index the bot played.
         """
-        return self._client.builtin_step(self.bot_name)
+        return self._client.move_builtin()
 
     def reset(self) -> None:
         """No-op reset hook.

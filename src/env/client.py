@@ -2,9 +2,12 @@
 
 import asyncio
 import json
+import logging
 from typing import Any
 
 import websockets
+
+logger = logging.getLogger(__name__)
 
 
 class GoClient:
@@ -20,8 +23,7 @@ class GoClient:
     reset        →
         send: ``{"type": "reset", "opponent": "<opponent>",
                  "board_size": <int>}``
-        recv: ``{"board": <list[str]>, "current_player": "black"|"white",
-                 "legal_moves": <list[bool]>}``
+        recv: ``{"success": <bool>}``
 
         ``<opponent>`` is the bot name (e.g. ``"easy"``) when the game
         will be driven by a built-in IPvGO bot, or ``"no-ai"`` when the
@@ -29,23 +31,29 @@ class GoClient:
         ``<board_size>`` is the side length of the square board (e.g. 5,
         7, 9, or 13).
 
-    step         →
-        send: ``{"type": "step", "action": <int>}``
-        recv: ``{"board": <list[str]>, "reward": <float>, "done": <bool>,
-                 "current_player": "black"|"white",
+    move         →
+        send: ``{"type": "move", "action": <int>, "player": "black"|"white"}``
+        recv: ``{"success": <bool>}``
+
+    observe      →
+        send: ``{"type": "observe"}``
+        recv: ``{"board": <list[str]>,
+                 "current_player": "black"|"white"|"none",
                  "legal_moves": <list[bool]>}``
 
-    builtin_step →
-        send: ``{"type": "builtin_step", "bot": "<bot_name>"}``
-        recv: ``{"action": <int>, "board": <list[str]>,
-                 "reward": <float>, "done": <bool>,
-                 "current_player": "black"|"white",
-                 "legal_moves": <list[bool]>}``
+        ``"current_player"`` is ``"none"`` when the game has ended.
 
-        The server instructs the named built-in bot to play its move,
-        advances the game state, and returns both the action the bot
-        chose and the resulting game state.  No separate ``step`` call
-        is needed afterwards.
+    reward       →
+        send: ``{"type": "reward", "player": "black"|"white"}``
+        recv: ``{"reward": <int>}``
+
+    move_builtin →
+        send: ``{"type": "move_builtin"}``
+        recv: ``{"action": <int>}``
+
+        The server instructs the configured built-in bot to play its
+        move, advances the game state, and returns the action index the
+        bot chose.  No separate ``move`` call is needed afterwards.
     """
 
     def __init__(self, uri: str = "ws://localhost:8765") -> None:
@@ -60,8 +68,13 @@ class GoClient:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    async def _send_recv(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Open a connection, send *payload*, receive one message, return it.
+    def _request(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Send *payload* to the server and return the parsed response.
+
+        Opens a fresh WebSocket connection, sends the JSON-serialised
+        payload, reads one response message, and closes the connection.
+        Using a new event loop per call keeps the client thread-safe
+        when TorchRL creates multiple environment workers.
 
         Args:
             payload: JSON-serialisable mapping to send to the server.
@@ -69,26 +82,18 @@ class GoClient:
         Returns:
             Parsed JSON response from the server.
         """
-        async with websockets.connect(self.uri) as ws:  # type: ClientConnection
-            await ws.send(json.dumps(payload))
-            raw = await ws.recv()
-        return json.loads(raw)  # type: ignore[return-value]
+        async def _do() -> dict[str, Any]:
+            async with websockets.connect(self.uri) as ws:  # type: ignore[attr-defined]
+                logger.debug("send: %s", payload)
+                await ws.send(json.dumps(payload))
+                raw = await ws.recv()
+            response: dict[str, Any] = json.loads(raw)
+            logger.debug("recv: %s", response)
+            return response
 
-    def _run(self, coro: Any) -> Any:
-        """Execute *coro* in a new event loop and return the result.
-
-        Using a new loop per call keeps the client thread-safe when TorchRL
-        creates multiple environment workers.
-
-        Args:
-            coro: Awaitable coroutine to execute.
-
-        Returns:
-            The return value of *coro*.
-        """
         loop = asyncio.new_event_loop()
         try:
-            return loop.run_until_complete(coro)
+            return loop.run_until_complete(_do())
         finally:
             loop.close()
 
@@ -100,8 +105,8 @@ class GoClient:
         self,
         opponent: str = "no-ai",
         board_size: int = 9,
-    ) -> dict[str, Any]:
-        """Ask the server to start a new game and return the initial state.
+    ) -> bool:
+        """Ask the server to start a new game.
 
         Args:
             opponent: Name of the opponent the server should use for
@@ -115,82 +120,121 @@ class GoClient:
                 ``9``, and ``13``.
 
         Returns:
-            Server response dict with keys ``board``, ``current_player``,
-            and ``legal_moves``.
-        """
-        return self._run(  # type: ignore[return-value]
-            self._send_recv(
-                {
-                    "type": "reset",
-                    "opponent": opponent,
-                    "board_size": board_size,
-                }
-            )
-        )
+            ``True`` if the server successfully reset the game.
 
-    def step(self, action: int) -> dict[str, Any]:
-        """Send *action* to the server and return the updated game state.
+        Raises:
+            ValueError: If the server response is missing the
+                ``"success"`` key.
+        """
+        response = self._request(
+            {
+                "type": "reset",
+                "opponent": opponent,
+                "board_size": board_size,
+            }
+        )
+        if "success" not in response:
+            raise ValueError(
+                f"reset: malformed server response, missing 'success' key: "
+                f"{response!r}"
+            )
+        return bool(response["success"])
+
+    def move(self, action: int, player: str = "black") -> bool:
+        """Send *action* to the server and advance the game state.
 
         Args:
             action: Integer action index.  Values in ``[0, board_size**2)``
                 place a stone; the last index (``board_size**2``) is PASS.
+            player: ``"black"`` or ``"white"``.  Indicates which player
+                is making the move.  The learning agent always plays as
+                ``"black"``; non-builtin opponents play as ``"white"``.
+                Defaults to ``"black"``.
 
         Returns:
-            Server response dict with keys ``board``, ``reward``, ``done``,
-            ``current_player``, and ``legal_moves``.
+            ``True`` if the server accepted the move.
+
+        Raises:
+            ValueError: If the server response is missing the
+                ``"success"`` key.
         """
-        return self._run(  # type: ignore[return-value]
-            self._send_recv({"type": "step", "action": action})
+        response = self._request(
+            {"type": "move", "action": action, "player": player}
         )
+        if "success" not in response:
+            raise ValueError(
+                f"move: malformed server response, missing 'success' key: "
+                f"{response!r}"
+            )
+        return bool(response["success"])
 
-    def builtin_step(self, bot_name: str) -> dict[str, Any]:
-        """Tell the server to have a built-in bot play its move.
-
-        Sends a ``builtin_step`` request to the server.  The server
-        instructs the named bot to choose and play its move, advances
-        the game state, and returns the resulting state together with
-        the action index the bot chose.
-
-        Unlike :meth:`step`, **no action is supplied by the caller**:
-        move selection is entirely server-driven.  The caller must
-        **not** send a subsequent :meth:`step` for the same turn, as
-        the game state is already advanced when this method returns.
-
-        Args:
-            bot_name: Name of the built-in bot, e.g. ``"easy"``,
-                ``"medium"``, or ``"hard"``.
+    def observe(self) -> dict[str, Any]:
+        """Fetch the current game state from the server.
 
         Returns:
             Server response dict with keys:
 
-            * ``"action"`` - integer action index the bot played.
-            * ``"board"`` - updated board strings.
-            * ``"reward"`` - float reward from the bot's perspective.
-            * ``"done"`` - boolean episode-termination flag.
-            * ``"current_player"`` - ``"black"`` or ``"white"``.
-            * ``"legal_moves"`` - updated flat boolean legality list.
+            * ``"board"``          - list of board-size strings encoding
+              stone positions (``'X'`` black, ``'O'`` white, ``'.'``
+              empty).
+            * ``"current_player"`` - ``"black"``, ``"white"``, or
+              ``"none"`` (game over).
+            * ``"legal_moves"``    - flat boolean list of length
+              ``board_size * board_size + 1``; the last entry is PASS
+              legality.
 
         Raises:
-            NotImplementedError: Always - the server-side API for
-                built-in bot steps has not yet been finalised.
-
-        Todo:
-            Implement once the WebSocket server exposes the
-            ``builtin_step`` message type.  Expected wire format::
-
-                send: {"type": "builtin_step", "bot": "<bot_name>"}
-                recv: {
-                    "action": <int>,
-                    "board": <list[str]>,
-                    "reward": <float>,
-                    "done": <bool>,
-                    "current_player": "black"|"white",
-                    "legal_moves": <list[bool]>
-                }
+            ValueError: If any required key is absent from the response.
         """
-        # TODO: implement once WebSocket API details are confirmed.
-        raise NotImplementedError(
-            f"builtin_step is not yet implemented for bot '{bot_name}'.  "
-            f"The WebSocket server API for built-in bot steps needs to be "
-            f"defined and deployed."
-        )
+        response = self._request({"type": "observe"})
+        for key in ("board", "current_player", "legal_moves"):
+            if key not in response:
+                raise ValueError(
+                    f"observe: malformed server response, missing '{key}' "
+                    f"key: {response!r}"
+                )
+        return response
+
+    def reward(self, player: str) -> int:
+        """Fetch the current reward for *player* from the server.
+
+        Args:
+            player: ``"black"`` or ``"white"``.
+
+        Returns:
+            Integer reward signal from the server's perspective.
+
+        Raises:
+            ValueError: If the server response is missing the
+                ``"reward"`` key.
+        """
+        response = self._request({"type": "reward", "player": player})
+        if "reward" not in response:
+            raise ValueError(
+                f"reward: malformed server response, missing 'reward' key: "
+                f"{response!r}"
+            )
+        return int(response["reward"])
+
+    def move_builtin(self) -> int:
+        """Tell the server to have the configured built-in bot play its move.
+
+        The server instructs the built-in bot (set when the game was
+        reset) to choose and execute its move, advances the game state,
+        and returns the integer action index the bot played.  No
+        separate :meth:`move` call is needed afterwards.
+
+        Returns:
+            Integer action index the built-in bot played.
+
+        Raises:
+            ValueError: If the server response is missing the
+                ``"action"`` key.
+        """
+        response = self._request({"type": "move_builtin"})
+        if "action" not in response:
+            raise ValueError(
+                f"move_builtin: malformed server response, missing 'action' "
+                f"key: {response!r}"
+            )
+        return int(response["action"])

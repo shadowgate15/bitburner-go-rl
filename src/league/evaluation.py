@@ -51,9 +51,8 @@ def evaluate(
 
     Runs *num_games* episodes against each opponent type in sequence.
     For built-in bots, each game uses
-    :meth:`~src.env.client.GoClient.builtin_step` to drive move
-    selection and state advancement server-side; when that API is not
-    yet available an :exc:`NotImplementedError` will be raised.
+    :meth:`~src.env.client.GoClient.move_builtin` to drive move
+    selection and state advancement server-side.
 
     Args:
         agent_actor: The current learning policy (TorchRL actor).

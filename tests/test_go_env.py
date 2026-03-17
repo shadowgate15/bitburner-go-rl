@@ -29,7 +29,7 @@ def _make_legal_moves(
 
 
 def _make_reset_response(size: int = BOARD_SIZE) -> dict[str, Any]:
-    """Return a fake server reset response."""
+    """Return a fake server observe response (initial state after reset)."""
     return {
         "board": _make_board(size),
         "current_player": "black",
@@ -42,10 +42,16 @@ def _make_step_response(
     reward: float = 0.0,
     done: bool = False,
 ) -> dict[str, Any]:
-    """Return a fake server step response."""
+    """Return a fake server observe response after a step.
+
+    With the new protocol, ``done`` is signalled by ``current_player ==
+    "none"``; the ``reward`` is fetched separately via a ``reward``
+    message.  This helper is only used for :meth:`_encode_step_response`
+    tests which still accept the old combined format.
+    """
     return {
         "board": _make_board(size),
-        "current_player": "white",
+        "current_player": "none" if done else "white",
         "legal_moves": _make_legal_moves(size),
         "reward": reward,
         "done": done,
@@ -197,7 +203,9 @@ class TestTorchRLGoEnvReset:
         """Return an env whose client is replaced by a MagicMock."""
         env = TorchRLGoEnv(board_size=size)
         mock_client = MagicMock()
-        mock_client.reset.return_value = _make_reset_response(size)
+        # reset() now returns a bool; observe() returns the board state.
+        mock_client.reset.return_value = True
+        mock_client.observe.return_value = _make_reset_response(size)
         env._client = mock_client
         return env
 
@@ -274,9 +282,15 @@ class TestTorchRLGoEnvStep:
         """Return an env whose client is replaced by a MagicMock."""
         env = TorchRLGoEnv(board_size=size)
         mock_client = MagicMock()
-        mock_client.step.return_value = _make_step_response(
-            size, reward, done
-        )
+        # move() returns a success bool; done is signalled by
+        # current_player == "none" in the observe() response.
+        mock_client.move.return_value = True
+        mock_client.observe.return_value = {
+            "board": _make_board(size),
+            "current_player": "none" if done else "white",
+            "legal_moves": _make_legal_moves(size),
+        }
+        mock_client.reward.return_value = int(reward)
         env._client = mock_client
         return env
 
@@ -313,19 +327,25 @@ class TestTorchRLGoEnvStep:
         assert td["done"].item() is False
 
     def test_step_passes_action_to_client(self) -> None:
-        """_step must forward the action integer to client.step."""
+        """_step must forward the action integer and player to client.move."""
         env = self._make_env_with_mock_client()
         env._step(_make_action_td(action=7))
-        env._client.step.assert_called_once_with(7)  # type: ignore[union-attr]
+        env._client.move.assert_called_once_with(7, "black")  # type: ignore[union-attr]
 
     def test_pass_action_index(self) -> None:
         """The PASS action (last index) should be forwarded to the client."""
         env = self._make_env_with_mock_client()
         pass_action = BOARD_SIZE * BOARD_SIZE  # last valid action
         env._step(_make_action_td(action=pass_action))
-        env._client.step.assert_called_once_with(  # type: ignore[union-attr]
-            pass_action
+        env._client.move.assert_called_once_with(  # type: ignore[union-attr]
+            pass_action, "black"
         )
+
+    def test_step_white_player_forwarded(self) -> None:
+        """_step with player='white' must forward 'white' to client.move."""
+        env = self._make_env_with_mock_client()
+        env._step(_make_action_td(action=3), player="white")
+        env._client.move.assert_called_once_with(3, "white")  # type: ignore[union-attr]
 
 
 class TestTorchRLGoEnvHelpers:
