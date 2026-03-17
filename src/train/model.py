@@ -66,7 +66,7 @@ class GoCNN(nn.Module):
                     kernel_size=3,
                     padding=1,
                 ),
-                nn.BatchNorm2d(n_filters),
+                nn.BatchNorm2d(n_filters, track_running_stats=False),
                 nn.ReLU(inplace=True),
             ]
             current_channels = n_filters
