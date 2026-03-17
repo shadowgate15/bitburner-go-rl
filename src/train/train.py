@@ -28,7 +28,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
-from tensordict.nn import TensorDictModule, TensorDictSequential
+from tensordict.nn import TensorDictModule
 from torchrl.collectors import SyncDataCollector
 from torchrl.data import LazyTensorStorage, ReplayBuffer
 from torchrl.data.replay_buffers.samplers import (
@@ -258,11 +258,14 @@ def train(cfg: TrainConfig | None = None) -> None:
     print(f"  Critic: {sum(p.numel() for p in critic.parameters()):,} params")
 
     # ------------------------------------------------------------------
-    # 3. Combined policy for data collection
-    #    The TensorDictSequential runs actor first (adds action &
-    #    sample_log_prob), then critic (adds state_value).
+    # 3. Policy for data collection (actor only).
+    #    Only the actor runs during rollouts to produce action &
+    #    sample_log_prob.  GAE calls the critic internally on both the
+    #    current and next observations, so pre-computing state_value
+    #    here would cause a TensorDict key mismatch when stacking the
+    #    two steps (current has state_value; next does not).
     # ------------------------------------------------------------------
-    collection_policy = TensorDictSequential(actor, critic)
+    collection_policy = actor
 
     # ------------------------------------------------------------------
     # 4. Advantage estimator (GAE)
@@ -345,8 +348,9 @@ def train(cfg: TrainConfig | None = None) -> None:
 
     for data in collector:
         # data shape: (frames_per_batch,) TensorDict
-        # Contains: observation, action, action_log_prob, state_value,
+        # Contains: observation, action, action_log_prob,
         #           next.{observation, reward, done, terminated}
+        # Note: state_value is NOT pre-computed here; GAE adds it.
 
         iter_idx += 1
 
