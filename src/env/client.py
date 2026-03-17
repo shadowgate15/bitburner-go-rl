@@ -17,14 +17,28 @@ class GoClient:
 
     Server message contract
     -----------------------
-    reset → send: ``{"type": "reset"}``
-           recv: ``{"board": <list[str]>, "current_player": "black"|"white",
-                    "legal_moves": <list[bool]>}``
+    reset        →
+        send: ``{"type": "reset"}``
+        recv: ``{"board": <list[str]>, "current_player": "black"|"white",
+                 "legal_moves": <list[bool]>}``
 
-    step  → send: ``{"type": "step", "action": <int>}``
-           recv: ``{"board": <list[str]>, "reward": <float>, "done": <bool>,
-                    "current_player": "black"|"white",
-                    "legal_moves": <list[bool]>}``
+    step         →
+        send: ``{"type": "step", "action": <int>}``
+        recv: ``{"board": <list[str]>, "reward": <float>, "done": <bool>,
+                 "current_player": "black"|"white",
+                 "legal_moves": <list[bool]>}``
+
+    builtin_step →
+        send: ``{"type": "builtin_step", "bot": "<bot_name>"}``
+        recv: ``{"action": <int>, "board": <list[str]>,
+                 "reward": <float>, "done": <bool>,
+                 "current_player": "black"|"white",
+                 "legal_moves": <list[bool]>}``
+
+        The server instructs the named built-in bot to play its move,
+        advances the game state, and returns both the action the bot
+        chose and the resulting game state.  No separate ``step`` call
+        is needed afterwards.
     """
 
     def __init__(self, uri: str = "ws://localhost:8765") -> None:
@@ -99,46 +113,54 @@ class GoClient:
             self._send_recv({"type": "step", "action": action})
         )
 
-    def get_builtin_move(
-        self, bot_name: str, state: dict[str, Any]
-    ) -> int:
-        """Request a move from a built-in IPvGO bot via the server.
+    def builtin_step(self, bot_name: str) -> dict[str, Any]:
+        """Tell the server to have a built-in bot play its move.
 
-        Sends a ``builtin_move`` request to the server, asking the
-        named bot to choose an action given the current game *state*.
-        The server should respond with a single ``action`` integer.
+        Sends a ``builtin_step`` request to the server.  The server
+        instructs the named bot to choose and play its move, advances
+        the game state, and returns the resulting state together with
+        the action index the bot chose.
+
+        Unlike :meth:`step`, **no action is supplied by the caller**:
+        move selection is entirely server-driven.  The caller must
+        **not** send a subsequent :meth:`step` for the same turn, as
+        the game state is already advanced when this method returns.
 
         Args:
             bot_name: Name of the built-in bot, e.g. ``"easy"``,
                 ``"medium"``, or ``"hard"``.
-            state: Current game state dict as returned by
-                :meth:`reset` or :meth:`step`.  Must contain at
-                minimum ``"board"``, ``"current_player"``, and
-                ``"legal_moves"``.
 
         Returns:
-            Integer action index chosen by the bot.
+            Server response dict with keys:
+
+            * ``"action"`` - integer action index the bot played.
+            * ``"board"`` - updated board strings.
+            * ``"reward"`` - float reward from the bot's perspective.
+            * ``"done"`` - boolean episode-termination flag.
+            * ``"current_player"`` - ``"black"`` or ``"white"``.
+            * ``"legal_moves"`` - updated flat boolean legality list.
 
         Raises:
             NotImplementedError: Always - the server-side API for
-                built-in bot moves has not yet been finalised.
+                built-in bot steps has not yet been finalised.
 
         Todo:
-            Implement once the WebSocket server exposes a
-            ``builtin_move`` message type.  Expected wire format::
+            Implement once the WebSocket server exposes the
+            ``builtin_step`` message type.  Expected wire format::
 
-                send: {
-                    "type": "builtin_move",
-                    "bot": "<bot_name>",
+                send: {"type": "builtin_step", "bot": "<bot_name>"}
+                recv: {
+                    "action": <int>,
                     "board": <list[str]>,
+                    "reward": <float>,
+                    "done": <bool>,
                     "current_player": "black"|"white",
                     "legal_moves": <list[bool]>
                 }
-                recv: {"action": <int>}
         """
         # TODO: implement once WebSocket API details are confirmed.
         raise NotImplementedError(
-            f"get_builtin_move is not yet implemented for bot "
-            f"'{bot_name}'.  The WebSocket server API for built-in "
-            f"bot moves needs to be defined and deployed."
+            f"builtin_step is not yet implemented for bot '{bot_name}'.  "
+            f"The WebSocket server API for built-in bot steps needs to be "
+            f"defined and deployed."
         )

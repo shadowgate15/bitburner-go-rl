@@ -50,10 +50,10 @@ def evaluate(
     """Evaluate the agent against all opponent categories.
 
     Runs *num_games* episodes against each opponent type in sequence.
-    For built-in bots the game result depends on the server's
-    implementation of
-    :meth:`~src.env.client.GoClient.get_builtin_move`; when that API
-    is not yet available an :exc:`NotImplementedError` will be raised.
+    For built-in bots, each game uses
+    :meth:`~src.env.client.GoClient.builtin_step` to drive move
+    selection and state advancement server-side; when that API is not
+    yet available an :exc:`NotImplementedError` will be raised.
 
     Args:
         agent_actor: The current learning policy (TorchRL actor).

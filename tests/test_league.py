@@ -12,7 +12,7 @@ a GPU.  They exercise:
 * :func:`~src.league.rollout.play_episode` episode structure.
 * :func:`~src.league.evaluation.evaluate` metrics structure.
 * :class:`~src.train.train.CurriculumTrainConfig` defaults.
-* :meth:`~src.env.client.GoClient.get_builtin_move` raises correctly.
+* :meth:`~src.env.client.GoClient.builtin_step` raises correctly.
 """
 
 from __future__ import annotations
@@ -294,85 +294,88 @@ class TestModelOpponent:
 class TestBuiltinOpponent:
     """Tests for :class:`BuiltinOpponent`."""
 
-    def test_act_calls_client_get_builtin_move(self) -> None:
-        """act must delegate to client.get_builtin_move."""
+    def _make_mock_response(
+        self,
+        board_size: int = BOARD_SIZE,
+        action: int = 0,
+        done: bool = False,
+        reward: float = 0.0,
+    ) -> dict[str, Any]:
+        """Return a minimal server response as returned by builtin_step."""
+        board = ["." * board_size for _ in range(board_size)]
+        legal = [True] * (board_size * board_size + 1)
+        return {
+            "action": action,
+            "board": board,
+            "reward": reward,
+            "done": done,
+            "current_player": "black",
+            "legal_moves": legal,
+        }
+
+    def test_step_calls_client_builtin_step(self) -> None:
+        """step() must delegate to client.builtin_step with the bot name."""
         mock_client = MagicMock()
-        mock_client.get_builtin_move.return_value = 7
+        mock_client.builtin_step.return_value = self._make_mock_response()
         opp = BuiltinOpponent("easy", mock_client)
-        obs = _make_obs()
-        action = opp.act(obs)
-        assert action == 7
-        mock_client.get_builtin_move.assert_called_once()
-        call_args = mock_client.get_builtin_move.call_args
-        assert call_args[0][0] == "easy"
+        opp.step()
+        mock_client.builtin_step.assert_called_once_with("easy")
 
-    def test_act_passes_structured_state_not_tensor(self) -> None:
-        """act must pass a structured dict (not a raw tensor) to get_builtin_move.
+    def test_step_returns_server_response(self) -> None:
+        """step() must return the dict returned by client.builtin_step."""
+        mock_client = MagicMock()
+        response = self._make_mock_response(action=7)
+        mock_client.builtin_step.return_value = response
+        opp = BuiltinOpponent("medium", mock_client)
+        result = opp.step()
+        assert result is response
 
-        The state dict must contain 'board', 'current_player', and
-        'legal_moves' keys so the server can process the request.
+    def test_step_returns_action_in_response(self) -> None:
+        """The response dict returned by step() must contain 'action'."""
+        mock_client = MagicMock()
+        mock_client.builtin_step.return_value = self._make_mock_response(
+            action=12
+        )
+        opp = BuiltinOpponent("hard", mock_client)
+        result = opp.step()
+        assert result["action"] == 12
+
+    def test_step_response_contains_game_state_keys(self) -> None:
+        """Response must contain board, reward, done, current_player, legal_moves."""
+        mock_client = MagicMock()
+        mock_client.builtin_step.return_value = self._make_mock_response()
+        opp = BuiltinOpponent("easy", mock_client)
+        result = opp.step()
+        for key in ("board", "reward", "done", "current_player", "legal_moves"):
+            assert key in result, f"response missing key '{key}'"
+
+    def test_step_does_not_send_state_to_server(self) -> None:
+        """step() must not accept or forward any board-state argument.
+
+        The IPvGO API is server-driven: the server knows the current state.
         """
         mock_client = MagicMock()
-        mock_client.get_builtin_move.return_value = 0
-        opp = BuiltinOpponent("medium", mock_client)
-        obs = _make_obs()
-        opp.act(obs)
-        _, state_dict = mock_client.get_builtin_move.call_args[0]
-        assert "board" in state_dict, "state must contain 'board'"
-        assert "current_player" in state_dict, (
-            "state must contain 'current_player'"
-        )
-        assert "legal_moves" in state_dict, (
-            "state must contain 'legal_moves'"
-        )
-        assert "tensor" not in state_dict, (
-            "state must NOT pass a raw tensor"
+        mock_client.builtin_step.return_value = self._make_mock_response()
+        opp = BuiltinOpponent("easy", mock_client)
+        opp.step()
+        # builtin_step must be called with only the bot name - no state
+        call_args = mock_client.builtin_step.call_args
+        assert call_args == (("easy",), {}), (
+            f"builtin_step called with unexpected args: {call_args}"
         )
 
-    def test_act_board_is_list_of_strings(self) -> None:
-        """The 'board' value passed to get_builtin_move must be list[str]."""
-        mock_client = MagicMock()
-        mock_client.get_builtin_move.return_value = 0
-        opp = BuiltinOpponent("hard", mock_client)
-        obs = _make_obs()
-        opp.act(obs)
-        _, state_dict = mock_client.get_builtin_move.call_args[0]
-        board = state_dict["board"]
-        assert isinstance(board, list)
-        assert all(isinstance(row, str) for row in board)
-        assert len(board) == BOARD_SIZE
-        assert all(len(row) == BOARD_SIZE for row in board)
+    def test_builtin_has_no_act_method(self) -> None:
+        """BuiltinOpponent must not expose an act() method.
 
-    def test_act_legal_moves_has_correct_length(self) -> None:
-        """'legal_moves' passed to get_builtin_move must have length B*B+1."""
+        Move selection and state advancement are both server-driven, so
+        the act() / env._step() split used by other opponents does not
+        apply.
+        """
         mock_client = MagicMock()
-        mock_client.get_builtin_move.return_value = 0
         opp = BuiltinOpponent("easy", mock_client)
-        obs = _make_obs()
-        opp.act(obs)
-        _, state_dict = mock_client.get_builtin_move.call_args[0]
-        assert len(state_dict["legal_moves"]) == BOARD_SIZE * BOARD_SIZE + 1
-
-    def test_act_current_player_is_black(self) -> None:
-        """'current_player' must be 'black' when channel 2 is all ones."""
-        mock_client = MagicMock()
-        mock_client.get_builtin_move.return_value = 0
-        opp = BuiltinOpponent("easy", mock_client)
-        obs = _make_obs()  # channel 2 = all ones => black's turn
-        opp.act(obs)
-        _, state_dict = mock_client.get_builtin_move.call_args[0]
-        assert state_dict["current_player"] == "black"
-
-    def test_act_current_player_is_white(self) -> None:
-        """'current_player' must be 'white' when channel 2 is all zeros."""
-        mock_client = MagicMock()
-        mock_client.get_builtin_move.return_value = 0
-        opp = BuiltinOpponent("easy", mock_client)
-        obs = _make_obs()
-        obs[2] = 0.0  # override: white's turn
-        opp.act(obs)
-        _, state_dict = mock_client.get_builtin_move.call_args[0]
-        assert state_dict["current_player"] == "white"
+        assert not hasattr(opp, "act"), (
+            "BuiltinOpponent should not have act(); use step() instead"
+        )
 
     def test_reset_is_no_op(self) -> None:
         """reset must not raise and must be idempotent."""
@@ -408,20 +411,20 @@ class TestBuiltinOpponent:
 
 
 # ---------------------------------------------------------------------------
-# GoClient.get_builtin_move
+# GoClient.builtin_step
 # ---------------------------------------------------------------------------
 
 
-class TestGoClientGetBuiltinMove:
-    """Tests for the get_builtin_move stub on GoClient."""
+class TestGoClientBuiltinStep:
+    """Tests for the builtin_step stub on GoClient."""
 
     def test_raises_not_implemented(self) -> None:
-        """get_builtin_move must raise NotImplementedError (not yet impl)."""
+        """builtin_step must raise NotImplementedError (not yet impl)."""
         from src.env.client import GoClient
 
         client = GoClient()
-        with pytest.raises(NotImplementedError, match="get_builtin_move"):
-            client.get_builtin_move("easy", {})
+        with pytest.raises(NotImplementedError, match="builtin_step"):
+            client.builtin_step("easy")
 
     def test_error_message_contains_bot_name(self) -> None:
         """Error message must include the bot name."""
@@ -429,7 +432,7 @@ class TestGoClientGetBuiltinMove:
 
         client = GoClient()
         with pytest.raises(NotImplementedError, match="medium"):
-            client.get_builtin_move("medium", {})
+            client.builtin_step("medium")
 
 
 # ---------------------------------------------------------------------------
@@ -476,21 +479,21 @@ class TestOpponentPool:
         # No checkpoints → should fall back to Random or Builtin
         for _ in range(20):
             opp = pool.sample_opponent("early")
-            assert hasattr(opp, "act")
+            assert isinstance(opp, (BuiltinOpponent, RandomOpponent, ModelOpponent))
 
     def test_sample_opponent_mid_returns_opponent(self) -> None:
         """sample_opponent('mid') must return a valid opponent."""
         pool = OpponentPool(board_size=BOARD_SIZE)
         for _ in range(20):
             opp = pool.sample_opponent("mid")
-            assert hasattr(opp, "act")
+            assert isinstance(opp, (BuiltinOpponent, RandomOpponent, ModelOpponent))
 
     def test_sample_opponent_late_returns_opponent(self) -> None:
         """sample_opponent('late') must return a valid opponent."""
         pool = OpponentPool(board_size=BOARD_SIZE)
         for _ in range(20):
             opp = pool.sample_opponent("late")
-            assert hasattr(opp, "act")
+            assert isinstance(opp, (BuiltinOpponent, RandomOpponent, ModelOpponent))
 
     def test_set_latest_actor_used_in_sampling(self) -> None:
         """latest actor must be used when sampling 'latest' type."""
@@ -655,10 +658,95 @@ class TestPlayEpisode:
         result = play_episode(env, actor, opp, BOARD_SIZE)
         assert result["steps"] >= 1
 
+    def test_builtin_opponent_step_called_not_env_step(self) -> None:
+        """For BuiltinOpponent, step() is called; env._step is not called for opponent's turn.
+
+        The game state is already advanced by builtin_step on the server,
+        so play_episode must use env._encode_step_response instead of
+        calling env._step for the opponent's move.
+        """
+        actor, _ = _make_actor_critic()
+
+        # Build an env whose mock client drives: agent step (non-terminal),
+        # then episode ends on the BUILTIN step.
+        board = ["." * BOARD_SIZE for _ in range(BOARD_SIZE)]
+        legal = [True] * (BOARD_SIZE * BOARD_SIZE + 1)
+
+        env = TorchRLGoEnv(board_size=BOARD_SIZE)
+        env_mock_client = MagicMock()
+        env_mock_client.reset.return_value = {
+            "board": board,
+            "current_player": "black",
+            "legal_moves": legal,
+        }
+        # Agent's first step: non-terminal
+        env_mock_client.step.return_value = {
+            "board": board,
+            "current_player": "white",
+            "legal_moves": legal,
+            "reward": 0.0,
+            "done": False,
+        }
+        env._client = env_mock_client
+
+        # BuiltinOpponent with its own mocked client whose builtin_step
+        # terminates the episode.
+        builtin_client = MagicMock()
+        builtin_client.builtin_step.return_value = {
+            "action": BOARD_SIZE * BOARD_SIZE,  # PASS
+            "board": board,
+            "current_player": "black",
+            "legal_moves": legal,
+            "reward": 1.0,
+            "done": True,
+        }
+        opp = BuiltinOpponent("easy", builtin_client)
+
+        result = play_episode(env, actor, opp, BOARD_SIZE)
+
+        # builtin_step must have been called once (for the opponent's turn).
+        builtin_client.builtin_step.assert_called_once_with("easy")
+
+        # env._step must have been called ONLY for the agent's turn (once),
+        # NOT for the opponent's turn.
+        assert env_mock_client.step.call_count == 1, (
+            f"env._step called {env_mock_client.step.call_count} times; "
+            f"expected 1 (agent turn only)"
+        )
+
+        # Episode must have ended with the builtin's reward.
+        assert result["won"] is True
+        assert result["total_reward"] == pytest.approx(1.0)
+
 
 # ---------------------------------------------------------------------------
 # evaluate
 # ---------------------------------------------------------------------------
+
+
+def _make_builtin_mock(
+    board_size: int = BOARD_SIZE,
+    done_after_agent: bool = True,
+) -> BuiltinOpponent:
+    """Return a real BuiltinOpponent with a fully mocked client.
+
+    With ``done_after_agent=True`` (the default used in evaluate tests that
+    use ``n_steps=0``), the opponent's ``step()`` is never reached because
+    the agent's first step terminates the episode.  The mock is still set up
+    correctly so that tests which DO reach the opponent turn will work.
+    """
+    board = ["." * board_size for _ in range(board_size)]
+    legal = [True] * (board_size * board_size + 1)
+    mock_client = MagicMock()
+    mock_client.builtin_step.return_value = {
+        "action": board_size * board_size,  # PASS
+        "board": board,
+        "reward": 0.0,
+        "done": True,
+        "current_player": "black",
+        "legal_moves": legal,
+    }
+    return BuiltinOpponent("easy", mock_client)
 
 
 class TestEvaluate:
@@ -672,9 +760,8 @@ class TestEvaluate:
         def _env_factory() -> TorchRLGoEnv:
             return _make_env_with_mock(n_steps=0, reward=1.0)
 
-        # Patch get_builtin_opponent to avoid NotImplementedError
-        mock_builtin = MagicMock(spec=BuiltinOpponent)
-        mock_builtin.act.return_value = BOARD_SIZE * BOARD_SIZE  # PASS
+        # Patch get_builtin_opponent to return a proper BuiltinOpponent mock.
+        mock_builtin = _make_builtin_mock()
         with patch.object(pool, "get_builtin_opponent", return_value=mock_builtin):
             metrics = evaluate(
                 agent_actor=actor,
@@ -702,8 +789,7 @@ class TestEvaluate:
         def _env_factory() -> TorchRLGoEnv:
             return _make_env_with_mock(n_steps=0, reward=1.0)
 
-        mock_builtin = MagicMock(spec=BuiltinOpponent)
-        mock_builtin.act.return_value = BOARD_SIZE * BOARD_SIZE
+        mock_builtin = _make_builtin_mock()
         with patch.object(pool, "get_builtin_opponent", return_value=mock_builtin):
             metrics = evaluate(
                 agent_actor=actor,

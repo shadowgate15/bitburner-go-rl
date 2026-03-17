@@ -3,16 +3,25 @@
 This module defines four opponent types used during training and
 evaluation:
 
-* :class:`BuiltinOpponent`  - delegates to an IPvGO server-side bot.
+* :class:`BuiltinOpponent`  - delegates to an IPvGO server-side bot;
+  move selection **and** game-state advancement happen server-side.
 * :class:`RandomOpponent`   - samples uniformly from legal actions.
 * :class:`ModelOpponent`    - wraps a frozen TorchRL actor module.
 * :class:`OpponentPool`     - league manager that owns all opponent
   variants and samples them according to the curriculum stage.
 
-All opponent classes expose a single ``act(state)`` method that
-accepts the current board-observation tensor and returns an integer
-action index, providing a unified interface for :func:`play_episode`
-and :func:`evaluate`.
+:class:`RandomOpponent` and :class:`ModelOpponent` expose an
+``act(state)`` method that accepts the current board-observation tensor
+and returns an integer action index; game-state advancement is then
+handled by the caller via
+:meth:`~src.env.go_env.TorchRLGoEnv._step`.
+
+:class:`BuiltinOpponent` exposes a ``step()`` method instead: a single
+call both selects the bot's move **and** advances the server-side game
+state, so the caller must not call
+:meth:`~src.env.go_env.TorchRLGoEnv._step` for that turn.
+:func:`~src.league.rollout.play_episode` handles this distinction
+automatically.
 """
 
 from __future__ import annotations
@@ -57,16 +66,18 @@ class OpponentProtocol(Protocol):
 class BuiltinOpponent:
     """Interface to a named server-side IPvGO bot.
 
-    Delegates move selection to the Bitburner IPvGO server by calling
-    :meth:`~src.env.client.GoClient.get_builtin_move`.  The observation
-    tensor is decoded back into the structured board-state format
-    (``board``, ``current_player``, ``legal_moves``) before the request
-    is forwarded to the server.
+    Delegates move selection **and game-state advancement** to the
+    Bitburner IPvGO server by calling
+    :meth:`~src.env.client.GoClient.builtin_step`.
 
-    Move selection is **server-side** (one WebSocket call per turn).
-    The returned action index is then submitted to the game environment
-    by :func:`~src.league.rollout.play_episode` using the environment's
-    own connection, just like any other opponent type.
+    Unlike :class:`RandomOpponent` and :class:`ModelOpponent`, which
+    only *choose* an action and leave state advancement to the
+    environment's :meth:`~src.env.go_env.TorchRLGoEnv._step` method,
+    :class:`BuiltinOpponent` makes a single WebSocket call that both
+    selects and plays the bot's move server-side.  The game state is
+    therefore **already advanced** when :meth:`step` returns, so the
+    caller must **not** call :meth:`~src.env.go_env.TorchRLGoEnv._step`
+    for the same turn.
 
     The opponent is stateless between episodes; call :meth:`reset` at
     the start of each game if any per-episode server state needs to be
@@ -89,51 +100,42 @@ class BuiltinOpponent:
         self.bot_name = bot_name
         self._client = client
 
-    def act(self, state: torch.Tensor) -> int:
-        """Request a move from the server-side bot.
+    def step(self) -> dict[str, Any]:
+        """Tell the server to have the bot play its move.
 
-        Decodes the observation tensor back into the structured board-state
-        format expected by
-        :meth:`~src.env.client.GoClient.get_builtin_move` (board strings,
-        current player, legal-moves list), then forwards the request to
-        the Bitburner server.
+        Calls :meth:`~src.env.client.GoClient.builtin_step`, which
+        instructs the named bot to choose and execute its move on the
+        server.  The game state is advanced **server-side** before this
+        method returns.
 
-        Move selection happens **server-side** via the WebSocket; the
-        returned action index is then submitted to the game environment by
-        :func:`~src.league.rollout.play_episode` using the environment's
-        own connection.
-
-        Args:
-            state: Float32 board tensor of shape
-                ``(4, board_size, board_size)``.
+        The caller (:func:`~src.league.rollout.play_episode`) must use
+        the returned response to update its local state observation and
+        must **not** send a subsequent
+        :meth:`~src.env.go_env.TorchRLGoEnv._step` for the same turn.
 
         Returns:
-            Integer action index returned by the server.
+            Server response dict with keys:
+
+            * ``"action"``         - int action index the bot played.
+            * ``"board"``          - updated board strings.
+            * ``"reward"``         - float reward signal.
+            * ``"done"``           - bool episode-termination flag.
+            * ``"current_player"`` - ``"black"`` or ``"white"``.
+            * ``"legal_moves"``    - updated flat boolean legality list.
 
         Note:
             This method calls
-            :meth:`~src.env.client.GoClient.get_builtin_move` which
+            :meth:`~src.env.client.GoClient.builtin_step` which
             raises :exc:`NotImplementedError` until the WebSocket API
-            for built-in bots is implemented on the server side.
+            for built-in bot steps is implemented on the server side.
         """
-        from src.env.go_env import decode_observation  # local to avoid cycle
-
-        with torch.no_grad():
-            board, current_player, legal_moves = decode_observation(state)
-
-        state_dict: dict[str, Any] = {
-            "board": board,
-            "current_player": current_player,
-            "legal_moves": legal_moves,
-        }
-        return self._client.get_builtin_move(self.bot_name, state_dict)
+        return self._client.builtin_step(self.bot_name)
 
     def reset(self) -> None:
         """No-op reset hook.
 
-        :class:`BuiltinOpponent` is stateless - state is decoded fresh
-        from the observation tensor on every :meth:`act` call, so
-        nothing needs to be cleared between episodes.
+        :class:`BuiltinOpponent` is stateless - the server manages all
+        game state, so nothing needs to be cleared between episodes.
         """
 
 

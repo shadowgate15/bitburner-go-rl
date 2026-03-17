@@ -1,5 +1,7 @@
 """TorchRL environment for the board game Go via the Bitburner IPvGO engine."""
 
+from typing import Any
+
 import torch
 from tensordict import TensorDict
 from torchrl.data import Bounded, Composite, Unbounded
@@ -80,10 +82,9 @@ def decode_observation(
 ) -> tuple[list[str], str, list[bool]]:
     """Reconstruct a server-compatible state dict from an encoded observation.
 
-    This is the inverse of :func:`encode_board`.  It is used by
-    :class:`~src.league.opponents.BuiltinOpponent` to recover the
-    structured board state that must be forwarded to
-    :meth:`~src.env.client.GoClient.get_builtin_move`.
+    This is the inverse of :func:`encode_board`.  It recovers board
+    strings, the current player, and the flat legal-move list from a
+    4-channel observation tensor.
 
     Channel decoding:
 
@@ -98,9 +99,7 @@ def decode_observation(
     Limitation:
         The void/dead cell marker ``'#'`` is **not** preserved by
         :func:`encode_board` - those cells appear as empty ``'.'`` after
-        decoding.  This is acceptable for the purpose of requesting a
-        built-in bot move because the server re-derives legality from
-        the submitted board state.
+        decoding.
 
     Args:
         obs: Float32 tensor of shape ``(4, B, B)`` or ``(1, 4, B, B)``
@@ -323,6 +322,53 @@ class TorchRLGoEnv(EnvBase):
     # ------------------------------------------------------------------
     # Extra helpers exposed for testing / debugging
     # ------------------------------------------------------------------
+
+    def _encode_step_response(
+        self, response: dict[str, Any]
+    ) -> TensorDict:
+        """Encode a server step response into a TensorDict.
+
+        Converts a raw server response dict into the same
+        :class:`~tensordict.TensorDict` format returned by
+        :meth:`_step`, but **without** making a WebSocket call.
+
+        This is used by :func:`~src.league.rollout.play_episode` when a
+        :class:`~src.league.opponents.BuiltinOpponent` has already
+        driven the server to advance game state via
+        :meth:`~src.env.client.GoClient.builtin_step`.  In that case
+        the caller possesses the server's response dict but must
+        **not** send another WebSocket message (the state is already
+        advanced).
+
+        Args:
+            response: Server response dict as returned by
+                :meth:`~src.env.client.GoClient.builtin_step` or
+                :meth:`~src.env.client.GoClient.step`.  Must contain
+                keys ``"board"``, ``"reward"``, ``"done"``,
+                ``"current_player"``, and ``"legal_moves"``.
+
+        Returns:
+            TensorDict with keys ``"observation"``, ``"reward"``, and
+            ``"done"``, shaped identically to what :meth:`_step` returns.
+        """
+        board_state: list[str] = response["board"]
+        reward: float = float(response["reward"])
+        done: bool = bool(response["done"])
+        current_player: str = response.get("current_player", "black")
+        legal_moves: list[bool] = response["legal_moves"]
+
+        obs = encode_board(
+            board_state, legal_moves, current_player, self.board_size
+        )
+
+        return TensorDict(
+            {
+                "observation": obs,
+                "reward": torch.tensor([reward], dtype=torch.float32),
+                "done": torch.tensor([done], dtype=torch.bool),
+            },
+            batch_size=[],
+        )
 
     def encode_board(
         self,
