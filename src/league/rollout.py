@@ -10,6 +10,22 @@ opponent's moves are injected by calling the environment's
 The function does **not** accumulate experience for PPO updates;
 it exists solely to produce win/loss signals used by the evaluation
 system and curriculum.
+
+IPvGO WebSocket usage
+---------------------
+**All** opponent types use the IPvGO WebSocket indirectly because
+:meth:`~src.env.go_env.TorchRLGoEnv._step` always sends every move
+(agent *and* opponent) to the Bitburner server for authoritative game-
+state management.  The distinction between opponent types is in *move
+selection* only:
+
+* :class:`~src.league.opponents.BuiltinOpponent` - move selection also
+  goes through the server via a separate ``get_builtin_move`` request.
+* :class:`~src.league.opponents.ModelOpponent` - move selection is
+  **local** (frozen neural network inference); no extra WebSocket call.
+* :class:`~src.league.opponents.RandomOpponent` - move selection is
+  **local** (uniform sample from legal-move mask); no extra WebSocket
+  call.
 """
 
 from __future__ import annotations

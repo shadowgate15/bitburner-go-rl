@@ -58,17 +58,25 @@ class BuiltinOpponent:
     """Interface to a named server-side IPvGO bot.
 
     Delegates move selection to the Bitburner IPvGO server by calling
-    :meth:`~src.env.client.GoClient.get_builtin_move`.  The opponent
-    is stateless between episodes; call :meth:`reset` at the start of
-    each game if any per-episode server state needs to be cleared.
+    :meth:`~src.env.client.GoClient.get_builtin_move`.  The observation
+    tensor is decoded back into the structured board-state format
+    (``board``, ``current_player``, ``legal_moves``) before the request
+    is forwarded to the server.
+
+    Move selection is **server-side** (one WebSocket call per turn).
+    The returned action index is then submitted to the game environment
+    by :func:`~src.league.rollout.play_episode` using the environment's
+    own connection, just like any other opponent type.
+
+    The opponent is stateless between episodes; call :meth:`reset` at
+    the start of each game if any per-episode server state needs to be
+    cleared.
 
     Args:
         bot_name: Server-side bot identifier, e.g. ``"easy"``,
             ``"medium"``, or ``"hard"``.
         client: Initialised :class:`~src.env.client.GoClient` used to
             communicate with the Bitburner server.
-        last_state: Cached state dict passed with every
-            ``get_builtin_move`` request.  Updated by :meth:`act`.
     """
 
     def __init__(self, bot_name: str, client: GoClient) -> None:
@@ -80,13 +88,20 @@ class BuiltinOpponent:
         """
         self.bot_name = bot_name
         self._client = client
-        self._last_state: dict[str, Any] = {}
 
     def act(self, state: torch.Tensor) -> int:
         """Request a move from the server-side bot.
 
-        Converts *state* to a minimal dict and passes it to
-        :meth:`~src.env.client.GoClient.get_builtin_move`.
+        Decodes the observation tensor back into the structured board-state
+        format expected by
+        :meth:`~src.env.client.GoClient.get_builtin_move` (board strings,
+        current player, legal-moves list), then forwards the request to
+        the Bitburner server.
+
+        Move selection happens **server-side** via the WebSocket; the
+        returned action index is then submitted to the game environment by
+        :func:`~src.league.rollout.play_episode` using the environment's
+        own connection.
 
         Args:
             state: Float32 board tensor of shape
@@ -101,17 +116,25 @@ class BuiltinOpponent:
             raises :exc:`NotImplementedError` until the WebSocket API
             for built-in bots is implemented on the server side.
         """
-        # TODO: replace with proper state dict encoding once the
-        #       server-side built-in move API is finalised.
+        from src.env.go_env import decode_observation  # local to avoid cycle
+
         with torch.no_grad():
-            state_dict: dict[str, Any] = {
-                "tensor": state.cpu().tolist()
-            }
+            board, current_player, legal_moves = decode_observation(state)
+
+        state_dict: dict[str, Any] = {
+            "board": board,
+            "current_player": current_player,
+            "legal_moves": legal_moves,
+        }
         return self._client.get_builtin_move(self.bot_name, state_dict)
 
     def reset(self) -> None:
-        """Clear any per-episode state (no-op for stateless bots)."""
-        self._last_state = {}
+        """No-op reset hook.
+
+        :class:`BuiltinOpponent` is stateless - state is decoded fresh
+        from the observation tensor on every :meth:`act` call, so
+        nothing needs to be cleared between episodes.
+        """
 
 
 class RandomOpponent:

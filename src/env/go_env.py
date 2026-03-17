@@ -75,6 +75,81 @@ def encode_board(
     return torch.stack([black, white, player_plane, legal], dim=0)
 
 
+def decode_observation(
+    obs: torch.Tensor,
+) -> tuple[list[str], str, list[bool]]:
+    """Reconstruct a server-compatible state dict from an encoded observation.
+
+    This is the inverse of :func:`encode_board`.  It is used by
+    :class:`~src.league.opponents.BuiltinOpponent` to recover the
+    structured board state that must be forwarded to
+    :meth:`~src.env.client.GoClient.get_builtin_move`.
+
+    Channel decoding:
+
+    * Channel 0 - positions containing ``'X'`` (black stone).
+    * Channel 1 - positions containing ``'O'`` (white stone).
+    * Channel 2 - if ``obs[2, 0, 0] > 0.5`` the current player is
+      ``"black"``; otherwise ``"white"``.
+    * Channel 3 - legal board positions; PASS legality is not stored in
+      the tensor (see :func:`encode_board`), so it is always appended as
+      ``True`` (PASS is always legal in this implementation).
+
+    Limitation:
+        The void/dead cell marker ``'#'`` is **not** preserved by
+        :func:`encode_board` - those cells appear as empty ``'.'`` after
+        decoding.  This is acceptable for the purpose of requesting a
+        built-in bot move because the server re-derives legality from
+        the submitted board state.
+
+    Args:
+        obs: Float32 tensor of shape ``(4, B, B)`` or ``(1, 4, B, B)``
+            as returned by :func:`encode_board` or
+            :meth:`~src.env.go_env.TorchRLGoEnv._reset` /
+            :meth:`~src.env.go_env.TorchRLGoEnv._step`.
+
+    Returns:
+        A 3-tuple ``(board_state, current_player, legal_moves)`` where:
+
+        * ``board_state`` - list of *B* strings each of length *B*,
+          using ``'X'``, ``'O'``, and ``'.'``.
+        * ``current_player`` - ``"black"`` or ``"white"``.
+        * ``legal_moves`` - flat ``bool`` list of length
+          ``B * B + 1``; the last element is always ``True`` (PASS).
+    """
+    if obs.dim() == 4:
+        obs = obs[0]  # strip batch dimension
+
+    board_size = obs.shape[-1]
+
+    # Channels 0 and 1: stone positions.
+    board: list[str] = []
+    for row in range(board_size):
+        row_chars: list[str] = []
+        for col in range(board_size):
+            if obs[0, row, col].item() > 0.5:
+                row_chars.append(_BLACK)
+            elif obs[1, row, col].item() > 0.5:
+                row_chars.append(_WHITE)
+            else:
+                row_chars.append(".")
+        board.append("".join(row_chars))
+
+    # Channel 2: current-player plane.
+    current_player = "black" if obs[2, 0, 0].item() > 0.5 else "white"
+
+    # Channel 3: legal-move mask for board positions.
+    # PASS (last action) is always legal and is not stored in channel 3.
+    legal_moves: list[bool] = [
+        obs[3, row, col].item() > 0.5
+        for row in range(board_size)
+        for col in range(board_size)
+    ]
+    legal_moves.append(True)  # PASS is always legal
+
+    return board, current_player, legal_moves
+
+
 class TorchRLGoEnv(EnvBase):
     """TorchRL environment that wraps the Bitburner IPvGO WebSocket engine.
 
@@ -282,4 +357,4 @@ class TorchRLGoEnv(EnvBase):
         return torch.tensor(legal_moves, dtype=torch.bool)
 
 
-__all__ = ["TorchRLGoEnv", "encode_board"]
+__all__ = ["TorchRLGoEnv", "decode_observation", "encode_board"]

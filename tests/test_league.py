@@ -306,11 +306,78 @@ class TestBuiltinOpponent:
         call_args = mock_client.get_builtin_move.call_args
         assert call_args[0][0] == "easy"
 
-    def test_reset_clears_state(self) -> None:
-        """reset must not raise and must reset per-episode state."""
+    def test_act_passes_structured_state_not_tensor(self) -> None:
+        """act must pass a structured dict (not a raw tensor) to get_builtin_move.
+
+        The state dict must contain 'board', 'current_player', and
+        'legal_moves' keys so the server can process the request.
+        """
+        mock_client = MagicMock()
+        mock_client.get_builtin_move.return_value = 0
+        opp = BuiltinOpponent("medium", mock_client)
+        obs = _make_obs()
+        opp.act(obs)
+        _, state_dict = mock_client.get_builtin_move.call_args[0]
+        assert "board" in state_dict, "state must contain 'board'"
+        assert "current_player" in state_dict, (
+            "state must contain 'current_player'"
+        )
+        assert "legal_moves" in state_dict, (
+            "state must contain 'legal_moves'"
+        )
+        assert "tensor" not in state_dict, (
+            "state must NOT pass a raw tensor"
+        )
+
+    def test_act_board_is_list_of_strings(self) -> None:
+        """The 'board' value passed to get_builtin_move must be list[str]."""
+        mock_client = MagicMock()
+        mock_client.get_builtin_move.return_value = 0
+        opp = BuiltinOpponent("hard", mock_client)
+        obs = _make_obs()
+        opp.act(obs)
+        _, state_dict = mock_client.get_builtin_move.call_args[0]
+        board = state_dict["board"]
+        assert isinstance(board, list)
+        assert all(isinstance(row, str) for row in board)
+        assert len(board) == BOARD_SIZE
+        assert all(len(row) == BOARD_SIZE for row in board)
+
+    def test_act_legal_moves_has_correct_length(self) -> None:
+        """'legal_moves' passed to get_builtin_move must have length B*B+1."""
+        mock_client = MagicMock()
+        mock_client.get_builtin_move.return_value = 0
+        opp = BuiltinOpponent("easy", mock_client)
+        obs = _make_obs()
+        opp.act(obs)
+        _, state_dict = mock_client.get_builtin_move.call_args[0]
+        assert len(state_dict["legal_moves"]) == BOARD_SIZE * BOARD_SIZE + 1
+
+    def test_act_current_player_is_black(self) -> None:
+        """'current_player' must be 'black' when channel 2 is all ones."""
+        mock_client = MagicMock()
+        mock_client.get_builtin_move.return_value = 0
+        opp = BuiltinOpponent("easy", mock_client)
+        obs = _make_obs()  # channel 2 = all ones => black's turn
+        opp.act(obs)
+        _, state_dict = mock_client.get_builtin_move.call_args[0]
+        assert state_dict["current_player"] == "black"
+
+    def test_act_current_player_is_white(self) -> None:
+        """'current_player' must be 'white' when channel 2 is all zeros."""
+        mock_client = MagicMock()
+        mock_client.get_builtin_move.return_value = 0
+        opp = BuiltinOpponent("easy", mock_client)
+        obs = _make_obs()
+        obs[2] = 0.0  # override: white's turn
+        opp.act(obs)
+        _, state_dict = mock_client.get_builtin_move.call_args[0]
+        assert state_dict["current_player"] == "white"
+
+    def test_reset_is_no_op(self) -> None:
+        """reset must not raise and must be idempotent."""
         mock_client = MagicMock()
         opp = BuiltinOpponent("medium", mock_client)
-        # reset should run without error regardless of prior state
         opp.reset()
         opp.reset()  # idempotent
 
@@ -319,6 +386,25 @@ class TestBuiltinOpponent:
         mock_client = MagicMock()
         opp = BuiltinOpponent("hard", mock_client)
         assert opp.bot_name == "hard"
+
+    def test_model_opponent_act_no_websocket(self) -> None:
+        """ModelOpponent.act must not call any WebSocket client."""
+        actor, _ = _make_actor_critic()
+        opp = ModelOpponent(actor)
+        obs = _make_obs()
+        # If ModelOpponent somehow tried to open a WebSocket the test
+        # would fail because there is no server running.
+        action = opp.act(obs)
+        assert isinstance(action, int)
+
+    def test_random_opponent_act_no_websocket(self) -> None:
+        """RandomOpponent.act must not call any WebSocket client."""
+        n_actions = BOARD_SIZE * BOARD_SIZE + 1
+        opp = RandomOpponent(n_actions)
+        obs = _make_obs()
+        action = opp.act(obs)
+        assert isinstance(action, int)
+        assert 0 <= action < n_actions
 
 
 # ---------------------------------------------------------------------------
