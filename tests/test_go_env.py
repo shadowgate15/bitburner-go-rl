@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-from src.env.go_env import TorchRLGoEnv, decode_observation, encode_board
+from src.env.go_env import TorchRLGoEnv, encode_board
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -226,41 +226,6 @@ class TestTorchRLGoEnvReset:
         env._reset()
         env._client.reset.assert_called_once()  # type: ignore[union-attr]
 
-    def test_reset_default_opponent_is_no_ai(self) -> None:
-        """_reset with no explicit opponent must send 'no-ai' to the client."""
-        env = self._make_env_with_mock_client()
-        env._reset()
-        env._client.reset.assert_called_once_with("no-ai", BOARD_SIZE)  # type: ignore[union-attr]
-
-    def test_reset_builtin_opponent_forwarded(self) -> None:
-        """_reset must forward the given opponent name to client.reset."""
-        env = self._make_env_with_mock_client()
-        env._reset(opponent="easy")
-        env._client.reset.assert_called_once_with("easy", BOARD_SIZE)  # type: ignore[union-attr]
-
-    def test_reset_no_ai_forwarded_explicitly(self) -> None:
-        """_reset must forward 'no-ai' to client.reset when given explicitly."""
-        env = self._make_env_with_mock_client()
-        env._reset(opponent="no-ai")
-        env._client.reset.assert_called_once_with("no-ai", BOARD_SIZE)  # type: ignore[union-attr]
-
-    def test_reset_board_size_forwarded(self) -> None:
-        """_reset must forward self.board_size as the board_size arg."""
-        env = self._make_env_with_mock_client(size=7)
-        env._reset()
-        env._client.reset.assert_called_once_with("no-ai", 7)  # type: ignore[union-attr]
-
-    def test_reset_board_size_matches_env(self) -> None:
-        """board_size sent to client must equal env.board_size."""
-        for size in (5, 7, 9, 13):
-            env = TorchRLGoEnv(board_size=size)
-            mock_client = MagicMock()
-            mock_client.reset.return_value = _make_reset_response(size)
-            env._client = mock_client
-            env._reset()
-            _, called_size = mock_client.reset.call_args.args
-            assert called_size == size, f"Expected board_size={size}, got {called_size}"
-
 
 class TestTorchRLGoEnvStep:
     """Tests for TorchRLGoEnv._step."""
@@ -377,107 +342,3 @@ class TestGoClientLazy:
         assert client.uri == "ws://unused:9999"
         # Second access should return the same object.
         assert env.client is client
-
-
-# ---------------------------------------------------------------------------
-# decode_observation tests
-# ---------------------------------------------------------------------------
-
-
-class TestDecodeObservation:
-    """Tests for the decode_observation helper (inverse of encode_board)."""
-
-    def _roundtrip(
-        self,
-        board: list[str],
-        legal: list[bool],
-        player: str,
-    ) -> tuple[list[str], str, list[bool]]:
-        """Encode then decode and return the decoded values."""
-        obs = encode_board(board, legal, player, BOARD_SIZE)
-        return decode_observation(obs)
-
-    def test_empty_board_decoded(self) -> None:
-        """Empty board must decode to all '.' characters."""
-        board = _make_board()
-        legal = _make_legal_moves()
-        dec_board, dec_player, dec_legal = self._roundtrip(
-            board, legal, "black"
-        )
-        for row in dec_board:
-            assert set(row) == {"."}, f"Unexpected char in row: {row!r}"
-
-    def test_black_stone_roundtrip(self) -> None:
-        """A black stone encoded at (0,0) must decode back to 'X' at (0,0)."""
-        top_row = "X" + "." * (BOARD_SIZE - 1)
-        board = [top_row] + ["." * BOARD_SIZE] * (BOARD_SIZE - 1)
-        dec_board, _, _ = self._roundtrip(board, _make_legal_moves(), "black")
-        assert dec_board[0][0] == "X"
-        # All other cells should be empty.
-        assert dec_board[0][1:] == "." * (BOARD_SIZE - 1)
-
-    def test_white_stone_roundtrip(self) -> None:
-        """A white stone encoded at (1,2) must decode back to 'O' at (1,2)."""
-        board = ["." * BOARD_SIZE] * BOARD_SIZE
-        row = list(board[1])
-        row[2] = "O"
-        board[1] = "".join(row)
-        dec_board, _, _ = self._roundtrip(board, _make_legal_moves(), "white")
-        assert dec_board[1][2] == "O"
-
-    def test_current_player_black_roundtrip(self) -> None:
-        """Current player 'black' must round-trip correctly."""
-        _, dec_player, _ = self._roundtrip(
-            _make_board(), _make_legal_moves(), "black"
-        )
-        assert dec_player == "black"
-
-    def test_current_player_white_roundtrip(self) -> None:
-        """Current player 'white' must round-trip correctly."""
-        _, dec_player, _ = self._roundtrip(
-            _make_board(), _make_legal_moves(), "white"
-        )
-        assert dec_player == "white"
-
-    def test_legal_moves_roundtrip(self) -> None:
-        """Legal-move mask must round-trip for board positions."""
-        legal = [False] * (BOARD_SIZE * BOARD_SIZE + 1)
-        legal[0] = True  # only position (0,0) is legal
-        _, _, dec_legal = self._roundtrip(_make_board(), legal, "black")
-        # Board positions: only index 0 is True.
-        assert dec_legal[0] is True
-        assert all(v is False for v in dec_legal[1:BOARD_SIZE * BOARD_SIZE])
-        # PASS is always appended as True.
-        assert dec_legal[BOARD_SIZE * BOARD_SIZE] is True
-
-    def test_pass_always_legal_in_decoded(self) -> None:
-        """PASS (last index) must always be True regardless of input."""
-        legal = [False] * (BOARD_SIZE * BOARD_SIZE + 1)
-        _, _, dec_legal = self._roundtrip(_make_board(), legal, "black")
-        assert dec_legal[-1] is True
-
-    def test_decoded_legal_list_length(self) -> None:
-        """Decoded legal_moves must have length board_size**2 + 1."""
-        _, _, dec_legal = self._roundtrip(
-            _make_board(), _make_legal_moves(), "black"
-        )
-        assert len(dec_legal) == BOARD_SIZE * BOARD_SIZE + 1
-
-    def test_decoded_board_shape(self) -> None:
-        """Decoded board must be a list of board_size strings."""
-        dec_board, _, _ = self._roundtrip(
-            _make_board(), _make_legal_moves(), "black"
-        )
-        assert len(dec_board) == BOARD_SIZE
-        assert all(len(row) == BOARD_SIZE for row in dec_board)
-
-    def test_batched_input_stripped(self) -> None:
-        """decode_observation must handle a (1, 4, B, B) batched tensor."""
-        obs = encode_board(
-            _make_board(), _make_legal_moves(), "black", BOARD_SIZE
-        )
-        obs_batched = obs.unsqueeze(0)  # (1, 4, B, B)
-        dec_board, dec_player, dec_legal = decode_observation(obs_batched)
-        assert len(dec_board) == BOARD_SIZE
-        assert dec_player == "black"
-        assert len(dec_legal) == BOARD_SIZE * BOARD_SIZE + 1

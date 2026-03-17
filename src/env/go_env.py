@@ -1,7 +1,5 @@
 """TorchRL environment for the board game Go via the Bitburner IPvGO engine."""
 
-from typing import Any
-
 import torch
 from tensordict import TensorDict
 from torchrl.data import Bounded, Composite, Unbounded
@@ -75,78 +73,6 @@ def encode_board(
         player_plane = torch.zeros(board_size, board_size, dtype=torch.float32)
 
     return torch.stack([black, white, player_plane, legal], dim=0)
-
-
-def decode_observation(
-    obs: torch.Tensor,
-) -> tuple[list[str], str, list[bool]]:
-    """Reconstruct a server-compatible state dict from an encoded observation.
-
-    This is the inverse of :func:`encode_board`.  It recovers board
-    strings, the current player, and the flat legal-move list from a
-    4-channel observation tensor.
-
-    Channel decoding:
-
-    * Channel 0 - positions containing ``'X'`` (black stone).
-    * Channel 1 - positions containing ``'O'`` (white stone).
-    * Channel 2 - if ``obs[2, 0, 0] > 0.5`` the current player is
-      ``"black"``; otherwise ``"white"``.
-    * Channel 3 - legal board positions; PASS legality is not stored in
-      the tensor (see :func:`encode_board`), so it is always appended as
-      ``True`` (PASS is always legal in this implementation).
-
-    Limitation:
-        The void/dead cell marker ``'#'`` is **not** preserved by
-        :func:`encode_board` - those cells appear as empty ``'.'`` after
-        decoding.
-
-    Args:
-        obs: Float32 tensor of shape ``(4, B, B)`` or ``(1, 4, B, B)``
-            as returned by :func:`encode_board` or
-            :meth:`~src.env.go_env.TorchRLGoEnv._reset` /
-            :meth:`~src.env.go_env.TorchRLGoEnv._step`.
-
-    Returns:
-        A 3-tuple ``(board_state, current_player, legal_moves)`` where:
-
-        * ``board_state`` - list of *B* strings each of length *B*,
-          using ``'X'``, ``'O'``, and ``'.'``.
-        * ``current_player`` - ``"black"`` or ``"white"``.
-        * ``legal_moves`` - flat ``bool`` list of length
-          ``B * B + 1``; the last element is always ``True`` (PASS).
-    """
-    if obs.dim() == 4:
-        obs = obs[0]  # strip batch dimension
-
-    board_size = obs.shape[-1]
-
-    # Channels 0 and 1: stone positions.
-    board: list[str] = []
-    for row in range(board_size):
-        row_chars: list[str] = []
-        for col in range(board_size):
-            if obs[0, row, col].item() > 0.5:
-                row_chars.append(_BLACK)
-            elif obs[1, row, col].item() > 0.5:
-                row_chars.append(_WHITE)
-            else:
-                row_chars.append(".")
-        board.append("".join(row_chars))
-
-    # Channel 2: current-player plane.
-    current_player = "black" if obs[2, 0, 0].item() > 0.5 else "white"
-
-    # Channel 3: legal-move mask for board positions.
-    # PASS (last action) is always legal and is not stored in channel 3.
-    legal_moves: list[bool] = [
-        obs[3, row, col].item() > 0.5
-        for row in range(board_size)
-        for col in range(board_size)
-    ]
-    legal_moves.append(True)  # PASS is always legal
-
-    return board, current_player, legal_moves
 
 
 class TorchRLGoEnv(EnvBase):
@@ -243,11 +169,7 @@ class TorchRLGoEnv(EnvBase):
     # TorchRL interface
     # ------------------------------------------------------------------
 
-    def _reset(
-        self,
-        tensordict: TensorDict | None = None,
-        opponent: str = "no-ai",
-    ) -> TensorDict:
+    def _reset(self, tensordict: TensorDict | None = None) -> TensorDict:
         """Reset the environment and return the initial observation.
 
         Sends a ``reset`` message to the Bitburner server, receives the
@@ -255,18 +177,12 @@ class TorchRLGoEnv(EnvBase):
         containing the encoded observation and ``done=False``.
 
         Args:
-            tensordict: Unused; present for API compatibility with
-                TorchRL's :class:`~torchrl.envs.EnvBase`.
-            opponent: Opponent name to pass to the server.  Use a
-                built-in bot name (e.g. ``"easy"``, ``"medium"``,
-                ``"hard"``) when the server should control the opposing
-                player, or ``"no-ai"`` (the default) when the Python
-                side controls both players.
+            tensordict: Unused; present for API compatibility.
 
         Returns:
             TensorDict with keys ``"observation"`` and ``"done"``.
         """
-        response = self.client.reset(opponent, self.board_size)
+        response = self.client.reset()
 
         board_state: list[str] = response["board"]
         current_player: str = response.get("current_player", "black")
@@ -333,53 +249,6 @@ class TorchRLGoEnv(EnvBase):
     # Extra helpers exposed for testing / debugging
     # ------------------------------------------------------------------
 
-    def _encode_step_response(
-        self, response: dict[str, Any]
-    ) -> TensorDict:
-        """Encode a server step response into a TensorDict.
-
-        Converts a raw server response dict into the same
-        :class:`~tensordict.TensorDict` format returned by
-        :meth:`_step`, but **without** making a WebSocket call.
-
-        This is used by :func:`~src.league.rollout.play_episode` when a
-        :class:`~src.league.opponents.BuiltinOpponent` has already
-        driven the server to advance game state via
-        :meth:`~src.env.client.GoClient.builtin_step`.  In that case
-        the caller possesses the server's response dict but must
-        **not** send another WebSocket message (the state is already
-        advanced).
-
-        Args:
-            response: Server response dict as returned by
-                :meth:`~src.env.client.GoClient.builtin_step` or
-                :meth:`~src.env.client.GoClient.step`.  Must contain
-                keys ``"board"``, ``"reward"``, ``"done"``,
-                ``"current_player"``, and ``"legal_moves"``.
-
-        Returns:
-            TensorDict with keys ``"observation"``, ``"reward"``, and
-            ``"done"``, shaped identically to what :meth:`_step` returns.
-        """
-        board_state: list[str] = response["board"]
-        reward: float = float(response["reward"])
-        done: bool = bool(response["done"])
-        current_player: str = response.get("current_player", "black")
-        legal_moves: list[bool] = response["legal_moves"]
-
-        obs = encode_board(
-            board_state, legal_moves, current_player, self.board_size
-        )
-
-        return TensorDict(
-            {
-                "observation": obs,
-                "reward": torch.tensor([reward], dtype=torch.float32),
-                "done": torch.tensor([done], dtype=torch.bool),
-            },
-            batch_size=[],
-        )
-
     def encode_board(
         self,
         board_state: list[str],
@@ -413,4 +282,4 @@ class TorchRLGoEnv(EnvBase):
         return torch.tensor(legal_moves, dtype=torch.bool)
 
 
-__all__ = ["TorchRLGoEnv", "decode_observation", "encode_board"]
+__all__ = ["TorchRLGoEnv", "encode_board"]
