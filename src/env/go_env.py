@@ -266,7 +266,7 @@ class TorchRLGoEnv(EnvBase):
         Returns:
             TensorDict with keys ``"observation"`` and ``"done"``.
         """
-        response = self.client.reset(opponent)
+        response = self.client.reset(opponent, self.board_size)
 
         board_state: list[str] = response["board"]
         current_player: str = response.get("current_player", "black")

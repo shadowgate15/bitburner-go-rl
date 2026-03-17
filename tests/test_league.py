@@ -665,7 +665,7 @@ class TestPlayEpisode:
         n_actions = BOARD_SIZE * BOARD_SIZE + 1
         opp = RandomOpponent(n_actions)
         play_episode(env, actor, opp, BOARD_SIZE)
-        env._client.reset.assert_called_once_with("no-ai")  # type: ignore[union-attr]
+        env._client.reset.assert_called_once_with("no-ai", BOARD_SIZE)  # type: ignore[union-attr]
 
     def test_reset_sends_no_ai_for_model_opponent(self) -> None:
         """play_episode must call env._reset with 'no-ai' for ModelOpponent."""
@@ -673,7 +673,7 @@ class TestPlayEpisode:
         env = _make_env_with_mock(n_steps=0, reward=1.0)
         opp = ModelOpponent(actor)
         play_episode(env, actor, opp, BOARD_SIZE)
-        env._client.reset.assert_called_once_with("no-ai")  # type: ignore[union-attr]
+        env._client.reset.assert_called_once_with("no-ai", BOARD_SIZE)  # type: ignore[union-attr]
 
     def test_reset_sends_bot_name_for_builtin_opponent(self) -> None:
         """play_episode must call env._reset with the bot name for BuiltinOpponent."""
@@ -704,7 +704,7 @@ class TestPlayEpisode:
 
         play_episode(env, actor, opp, BOARD_SIZE)
 
-        env_mock_client.reset.assert_called_once_with("hard")
+        env_mock_client.reset.assert_called_once_with("hard", BOARD_SIZE)
 
     def test_reset_sends_correct_name_for_each_builtin_bot(self) -> None:
         """play_episode must forward whichever bot name the BuiltinOpponent holds."""
@@ -734,7 +734,7 @@ class TestPlayEpisode:
 
             play_episode(env, actor, opp, BOARD_SIZE)
 
-            env_mock_client.reset.assert_called_once_with(bot_name), (
+            env_mock_client.reset.assert_called_once_with(bot_name, BOARD_SIZE), (
                 f"Expected reset called with '{bot_name}'"
             )
 

@@ -18,13 +18,16 @@ class GoClient:
     Server message contract
     -----------------------
     reset        →
-        send: ``{"type": "reset", "opponent": "<opponent>"}``
+        send: ``{"type": "reset", "opponent": "<opponent>",
+                 "board_size": <int>}``
         recv: ``{"board": <list[str]>, "current_player": "black"|"white",
                  "legal_moves": <list[bool]>}``
 
         ``<opponent>`` is the bot name (e.g. ``"easy"``) when the game
         will be driven by a built-in IPvGO bot, or ``"no-ai"`` when the
         Python side controls both players (self-play / evaluation).
+        ``<board_size>`` is the side length of the square board (e.g. 5,
+        7, 9, or 13).
 
     step         →
         send: ``{"type": "step", "action": <int>}``
@@ -93,7 +96,11 @@ class GoClient:
     # Public API
     # ------------------------------------------------------------------
 
-    def reset(self, opponent: str = "no-ai") -> dict[str, Any]:
+    def reset(
+        self,
+        opponent: str = "no-ai",
+        board_size: int = 9,
+    ) -> dict[str, Any]:
         """Ask the server to start a new game and return the initial state.
 
         Args:
@@ -103,13 +110,22 @@ class GoClient:
                 by an IPvGO built-in AI, or ``"no-ai"`` (the default)
                 when the Python side controls both players (self-play
                 or model-vs-model evaluation).
+            board_size: Side length of the square board to request.
+                Defaults to ``9``.  Common values are ``5``, ``7``,
+                ``9``, and ``13``.
 
         Returns:
             Server response dict with keys ``board``, ``current_player``,
             and ``legal_moves``.
         """
         return self._run(  # type: ignore[return-value]
-            self._send_recv({"type": "reset", "opponent": opponent})
+            self._send_recv(
+                {
+                    "type": "reset",
+                    "opponent": opponent,
+                    "board_size": board_size,
+                }
+            )
         )
 
     def step(self, action: int) -> dict[str, Any]:

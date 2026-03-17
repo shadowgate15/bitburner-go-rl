@@ -230,19 +230,36 @@ class TestTorchRLGoEnvReset:
         """_reset with no explicit opponent must send 'no-ai' to the client."""
         env = self._make_env_with_mock_client()
         env._reset()
-        env._client.reset.assert_called_once_with("no-ai")  # type: ignore[union-attr]
+        env._client.reset.assert_called_once_with("no-ai", BOARD_SIZE)  # type: ignore[union-attr]
 
     def test_reset_builtin_opponent_forwarded(self) -> None:
         """_reset must forward the given opponent name to client.reset."""
         env = self._make_env_with_mock_client()
         env._reset(opponent="easy")
-        env._client.reset.assert_called_once_with("easy")  # type: ignore[union-attr]
+        env._client.reset.assert_called_once_with("easy", BOARD_SIZE)  # type: ignore[union-attr]
 
     def test_reset_no_ai_forwarded_explicitly(self) -> None:
         """_reset must forward 'no-ai' to client.reset when given explicitly."""
         env = self._make_env_with_mock_client()
         env._reset(opponent="no-ai")
-        env._client.reset.assert_called_once_with("no-ai")  # type: ignore[union-attr]
+        env._client.reset.assert_called_once_with("no-ai", BOARD_SIZE)  # type: ignore[union-attr]
+
+    def test_reset_board_size_forwarded(self) -> None:
+        """_reset must forward self.board_size as the board_size arg."""
+        env = self._make_env_with_mock_client(size=7)
+        env._reset()
+        env._client.reset.assert_called_once_with("no-ai", 7)  # type: ignore[union-attr]
+
+    def test_reset_board_size_matches_env(self) -> None:
+        """board_size sent to client must equal env.board_size."""
+        for size in (5, 7, 9, 13):
+            env = TorchRLGoEnv(board_size=size)
+            mock_client = MagicMock()
+            mock_client.reset.return_value = _make_reset_response(size)
+            env._client = mock_client
+            env._reset()
+            _, called_size = mock_client.reset.call_args.args
+            assert called_size == size, f"Expected board_size={size}, got {called_size}"
 
 
 class TestTorchRLGoEnvStep:
