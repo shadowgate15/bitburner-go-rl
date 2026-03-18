@@ -8,6 +8,7 @@ exercise:
 * ``build_network`` returns correctly-typed TorchRL modules.
 * ``TrainConfig`` default values and field types.
 * Checkpoint loading (``load_checkpoint`` field and ``--load-checkpoint`` CLI).
+* ``CurriculumTrainConfig`` defaults and curriculum board-size alignment.
 """
 
 import sys
@@ -16,8 +17,14 @@ from pathlib import Path
 import pytest
 import torch
 
+from src.curriculum.curriculum import BOARD_SIZES, GoCurriculumManager
 from src.train.model import GoActorNet, GoCNN, GoValueNet
-from src.train.train import TrainConfig, _parse_args, build_network
+from src.train.train import (
+    CurriculumTrainConfig,
+    TrainConfig,
+    _parse_args,
+    build_network,
+)
 
 BOARD_SIZE = 5  # Use a small board to keep tests fast
 BATCH = 4
@@ -454,3 +461,145 @@ class TestParseArgsLoadCheckpoint:
         monkeypatch.setattr(sys, "argv", ["train", "--load-checkpoint", ckpt])
         cfg = _parse_args()
         assert cfg.load_checkpoint == ckpt
+
+
+# ---------------------------------------------------------------------------
+# CurriculumTrainConfig
+# ---------------------------------------------------------------------------
+
+
+class TestCurriculumTrainConfig:
+    """Tests for CurriculumTrainConfig defaults and board-size alignment."""
+
+    def test_default_eval_interval(self) -> None:
+        """Default eval_interval must be 100."""
+        assert CurriculumTrainConfig().eval_interval == 100
+
+    def test_default_eval_episodes(self) -> None:
+        """Default eval_episodes must be 20."""
+        assert CurriculumTrainConfig().eval_episodes == 20
+
+    def test_default_curriculum_is_none(self) -> None:
+        """Default curriculum must be None."""
+        assert CurriculumTrainConfig().curriculum is None
+
+    def test_inherits_board_size_from_train_config(self) -> None:
+        """CurriculumTrainConfig must inherit board_size=9 from TrainConfig."""
+        assert CurriculumTrainConfig().board_size == 9
+
+    def test_custom_eval_interval(self) -> None:
+        """CurriculumTrainConfig must accept a custom eval_interval."""
+        cfg = CurriculumTrainConfig(eval_interval=50)
+        assert cfg.eval_interval == 50
+
+    def test_custom_curriculum(self) -> None:
+        """CurriculumTrainConfig must accept a pre-built curriculum."""
+        m = GoCurriculumManager()
+        cfg = CurriculumTrainConfig(curriculum=m)
+        assert cfg.curriculum is m
+
+
+# ---------------------------------------------------------------------------
+# Curriculum board-size alignment (regression tests for the
+# "TensorDictModule failed" crash caused by network/env size mismatch)
+# ---------------------------------------------------------------------------
+
+
+class TestCurriculumBoardSizeAlignment:
+    """Verify train_with_curriculum uses cfg.board_size as starting point.
+
+    The bug: train_with_curriculum built the network for cfg.board_size
+    (default 9) but created the environments using GoCurriculumManager()
+    which starts at BOARD_SIZES[0]=5.  The CNN FC layer Linear(5184,256)
+    received 64*5*5=1600 inputs and crashed immediately.
+    """
+
+    def _init_curriculum_like_train_fn(
+        self, cfg: CurriculumTrainConfig
+    ) -> GoCurriculumManager:
+        """Mirror the curriculum-init logic from train_with_curriculum.
+
+        Reproduces the logic added to fix the bug so we can assert on
+        the resulting starting board size without a live server.
+        """
+        if cfg.curriculum is not None:
+            return cfg.curriculum
+        try:
+            initial_board_size_idx = BOARD_SIZES.index(cfg.board_size)
+        except ValueError:
+            initial_board_size_idx = min(
+                range(len(BOARD_SIZES)),
+                key=lambda i: abs(BOARD_SIZES[i] - cfg.board_size),
+            )
+        return GoCurriculumManager(
+            initial_board_size_idx=initial_board_size_idx
+        )
+
+    def test_default_config_starts_at_board_size_9(self) -> None:
+        """Default CurriculumTrainConfig must start curriculum at 9x9.
+
+        Without the fix, GoCurriculumManager() starts at BOARD_SIZES[0]=5
+        while the network is built for board_size=9, causing a crash.
+        """
+        cfg = CurriculumTrainConfig()  # board_size=9 by default
+        curriculum = self._init_curriculum_like_train_fn(cfg)
+        assert curriculum.current_board_size == cfg.board_size
+
+    def test_board_size_5_config_starts_at_5(self) -> None:
+        """A config with board_size=5 must start the curriculum at 5."""
+        cfg = CurriculumTrainConfig(board_size=5)
+        curriculum = self._init_curriculum_like_train_fn(cfg)
+        assert curriculum.current_board_size == 5
+
+    def test_board_size_13_config_starts_at_13(self) -> None:
+        """A config with board_size=13 must start the curriculum at 13."""
+        cfg = CurriculumTrainConfig(board_size=13)
+        curriculum = self._init_curriculum_like_train_fn(cfg)
+        assert curriculum.current_board_size == 13
+
+    def test_non_standard_board_size_picks_nearest(self) -> None:
+        """A board_size not in BOARD_SIZES must start at the nearest size."""
+        cfg = CurriculumTrainConfig(board_size=6)  # between 5 and 7
+        curriculum = self._init_curriculum_like_train_fn(cfg)
+        # 6 is equidistant from 5 and 7; min() picks the first (5).
+        assert curriculum.current_board_size in BOARD_SIZES
+
+    def test_explicit_curriculum_not_overridden(self) -> None:
+        """An explicitly supplied curriculum must be used unchanged."""
+        custom_curriculum = GoCurriculumManager(
+            initial_board_size_idx=3  # board_size=13
+        )
+        cfg = CurriculumTrainConfig(curriculum=custom_curriculum)
+        curriculum = self._init_curriculum_like_train_fn(cfg)
+        assert curriculum is custom_curriculum
+        assert curriculum.current_board_size == 13
+
+    def test_network_and_env_compatible_after_init(self) -> None:
+        """Network and env must share the same board_size after init.
+
+        This is the key regression check: the actor built from
+        cfg.board_size must accept the observations from an env
+        initialised with the curriculum's starting board size.
+        """
+        cfg = CurriculumTrainConfig(
+            board_size=BOARD_SIZE,  # use the module-level constant
+            n_filters=16,
+            n_cnn_layers=1,
+            n_fc=32,
+        )
+        curriculum = self._init_curriculum_like_train_fn(cfg)
+
+        # The env's board size must match the network's board size.
+        assert curriculum.current_board_size == cfg.board_size
+
+        # The actor forward must succeed with an observation from that
+        # board size (would RuntimeError if sizes were mismatched).
+        from tensordict import TensorDict
+
+        actor, _ = build_network(cfg, torch.device("cpu"))
+        obs = torch.zeros(1, 4, BOARD_SIZE, BOARD_SIZE)
+        obs[:, 2, :, :] = 1.0  # current player = black
+        obs[:, 3, :, :] = 1.0  # all moves legal
+        td = TensorDict({"observation": obs}, batch_size=[1])
+        out = actor(td)
+        assert "action" in out

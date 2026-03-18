@@ -28,7 +28,7 @@ from __future__ import annotations
 
 import argparse
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import torch
@@ -45,7 +45,7 @@ from torchrl.modules import ProbabilisticActor, ValueOperator
 from torchrl.objectives import ClipPPOLoss
 from torchrl.objectives.value import GAE
 
-from src.curriculum.curriculum import GoCurriculumManager
+from src.curriculum.curriculum import BOARD_SIZES, GoCurriculumManager
 from src.env.go_env import TorchRLGoEnv
 from src.train.model import GoActorNet, GoValueNet
 
@@ -635,10 +635,18 @@ def train_with_curriculum(
       easiest opponent, the board size decreases.
     * **No change**: when the win rate is between the two thresholds.
 
-    Board-size changes require the ``SyncDataCollector`` to be
-    rebuilt (because the observation and action space dimensions
-    change).  Opponent-only changes just update ``train_env.opponent``
-    so the next automatic episode reset picks up the new setting.
+    Board-size changes require the actor, critic, loss module,
+    optimizer, advantage module, replay buffer, and
+    ``SyncDataCollector`` to be **fully rebuilt** because the CNN's
+    FC layer is fixed to ``n_filters * board_size**2`` inputs at
+    construction time and cannot handle a different board size.
+    Opponent-only changes just update ``train_env.opponent`` so the
+    next automatic episode reset picks up the new setting.
+
+    When no explicit ``cfg.curriculum`` is provided, the curriculum
+    manager is automatically initialised with a starting board-size
+    index that matches ``cfg.board_size``.  This ensures the initial
+    training environment is compatible with the network.
 
     Args:
         cfg: Curriculum training configuration.  Defaults to
@@ -648,7 +656,26 @@ def train_with_curriculum(
         cfg = CurriculumTrainConfig()
 
     # Initialise curriculum manager.
-    curriculum = cfg.curriculum or GoCurriculumManager()
+    # When no explicit curriculum is supplied, auto-select the starting
+    # board-size index so it matches cfg.board_size.  This is critical:
+    # the network is built once for cfg.board_size (the FC layer is
+    # fixed to n_filters * board_size**2 inputs), so the initial
+    # training environment MUST use the same board size, otherwise the
+    # SyncDataCollector immediately crashes with a shape mismatch.
+    if cfg.curriculum is not None:
+        curriculum = cfg.curriculum
+    else:
+        try:
+            initial_board_size_idx = BOARD_SIZES.index(cfg.board_size)
+        except ValueError:
+            # cfg.board_size is not in BOARD_SIZES; pick the nearest.
+            initial_board_size_idx = min(
+                range(len(BOARD_SIZES)),
+                key=lambda i: abs(BOARD_SIZES[i] - cfg.board_size),
+            )
+        curriculum = GoCurriculumManager(
+            initial_board_size_idx=initial_board_size_idx
+        )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[train_curriculum] Using device: {device}")
@@ -858,14 +885,53 @@ def train_with_curriculum(
             new_board_size = int(new_cfg["board_size"])
 
             if new_board_size != prev_board_size:
-                # Board-size change: rebuild env + collector so that
-                # the observation/action specs stay consistent.
+                # Board-size change: the CNN's FC layer is fixed to
+                # n_filters * board_size**2 inputs, so the actor and
+                # critic cannot process observations from a different
+                # board size.  Rebuild every size-dependent component:
+                # network, loss, optimizer, advantage module, replay
+                # buffer, environment, and collector.
                 print(
                     f"[train_curriculum] Board size changed "
                     f"{prev_board_size} → {new_board_size}. "
-                    "Rebuilding collector ..."
+                    "Rebuilding networks and collector ..."
                 )
                 collector.shutdown()
+
+                # New networks for the new board size.
+                size_cfg = replace(cfg, board_size=new_board_size)
+                actor, critic = build_network(size_cfg, device)
+                advantage_module = GAE(
+                    gamma=cfg.gamma,
+                    lmbda=cfg.lmbda,
+                    value_network=critic,
+                    average_gae=False,
+                )
+                loss_module = ClipPPOLoss(
+                    actor_network=actor,
+                    critic_network=critic,
+                    clip_epsilon=cfg.clip_epsilon,
+                    entropy_bonus=True,
+                    entropy_coeff=cfg.entropy_coeff,
+                    critic_coeff=cfg.critic_coeff,
+                    normalize_advantage=False,
+                )
+                all_params = list(loss_module.parameters())
+                optimizer = torch.optim.Adam(all_params, lr=cfg.lr)
+
+                # Fresh replay buffer (old one has wrong obs shape).
+                replay_buffer = ReplayBuffer(
+                    storage=LazyTensorStorage(
+                        max_size=cfg.frames_per_batch,
+                        device=device,
+                    ),
+                    sampler=SamplerWithoutReplacement(),
+                    batch_size=cfg.minibatch_size,
+                )
+
+                # New env + collector.
+                # _build_collector() reads `actor` from the closure,
+                # so it will use the freshly built network above.
                 train_env = TorchRLGoEnv(
                     board_size=new_board_size,
                     websocket_uri=cfg.websocket_uri,
