@@ -153,9 +153,7 @@ class CurriculumTrainConfig(TrainConfig):
     # ---- Curriculum ----
     eval_interval: int = 100
     eval_episodes: int = 20
-    curriculum: GoCurriculumManager | None = field(
-        default=None, repr=False
-    )
+    curriculum: GoCurriculumManager | None = field(default=None, repr=False)
 
 
 # ---------------------------------------------------------------------------
@@ -305,9 +303,7 @@ def run_evaluation_episodes(
         ValueError: If *n_episodes* is not positive.
     """
     if n_episodes <= 0:
-        raise ValueError(
-            f"n_episodes must be positive, got {n_episodes}"
-        )
+        raise ValueError(f"n_episodes must be positive, got {n_episodes}")
 
     # actor.module is the TensorDictModule(GoActorNet) that was passed
     # to ProbabilisticActor.  This is a documented attribute of
@@ -336,12 +332,8 @@ def run_evaluation_episodes(
                     batch_size=[1],
                 )
                 logit_td = logit_module(logit_td)
-                action = int(
-                    logit_td["logits"].argmax(dim=-1).item()
-                )
-                td["action"] = torch.tensor(
-                    action, dtype=torch.int64
-                )
+                action = int(logit_td["logits"].argmax(dim=-1).item())
+                td["action"] = torch.tensor(action, dtype=torch.int64)
 
                 # Step the environment.
                 td = eval_env.step(td)
@@ -673,18 +665,12 @@ def train_with_curriculum(
     start_iter = 0
     if cfg.load_checkpoint is not None:
         ckpt_path = Path(cfg.load_checkpoint)
-        print(
-            f"[train_curriculum] Loading checkpoint from {ckpt_path}"
-        )
-        ckpt = torch.load(
-            ckpt_path, map_location=device, weights_only=False
-        )
+        print(f"[train_curriculum] Loading checkpoint from {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
         actor.load_state_dict(ckpt["actor_state_dict"])
         critic.load_state_dict(ckpt["critic_state_dict"])
         start_iter = ckpt["iter"]
-        print(
-            f"[train_curriculum] Resumed from iteration {start_iter}."
-        )
+        print(f"[train_curriculum] Resumed from iteration {start_iter}.")
 
     # ------------------------------------------------------------------
     # Advantage estimator and PPO loss
@@ -899,18 +885,12 @@ def train_with_curriculum(
                     "critic_state_dict": critic.state_dict(),
                     "optimizer_state_dict": optimizer.state_dict(),
                     "cfg": cfg,
-                    "curriculum_opponent_idx": (
-                        curriculum.opponent_idx
-                    ),
-                    "curriculum_board_size_idx": (
-                        curriculum.board_size_idx
-                    ),
+                    "curriculum_opponent_idx": (curriculum.opponent_idx),
+                    "curriculum_board_size_idx": (curriculum.board_size_idx),
                 },
                 ckpt_path,
             )
-            print(
-                f"[train_curriculum] Checkpoint saved → {ckpt_path}"
-            )
+            print(f"[train_curriculum] Checkpoint saved → {ckpt_path}")
 
     # Final checkpoint
     final_path = ckpt_dir / "checkpoint_final.pt"
@@ -934,13 +914,7 @@ def train_with_curriculum(
     collector.shutdown()
 
 
-
-def _parse_args() -> TrainConfig:
-    """Parse command-line arguments into a :class:`TrainConfig`.
-
-    Returns:
-        Populated :class:`TrainConfig` with any CLI overrides applied.
-    """
+def _train_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Train a PPO Go agent against the Bitburner IPvGO engine."
     )
@@ -1082,7 +1056,16 @@ def _parse_args() -> TrainConfig:
         ),
     )
 
-    args = parser.parse_args()
+    return parser
+
+
+def _parse_args() -> TrainConfig:
+    """Parse command-line arguments into a :class:`TrainConfig`.
+
+    Returns:
+        Populated :class:`TrainConfig` with any CLI overrides applied.
+    """
+    args = _train_parser().parse_args()
 
     return TrainConfig(
         board_size=args.board_size,
@@ -1105,6 +1088,56 @@ def _parse_args() -> TrainConfig:
         save_interval=args.save_interval,
         checkpoint_dir=args.checkpoint_dir,
         load_checkpoint=args.load_checkpoint,
+    )
+
+
+def _parse_args_curriculum() -> CurriculumTrainConfig:
+    """Parse command-line arguments into a :class:`CurriculumTrainConfig`.
+
+    Returns:
+        Populated :class:`CurriculumTrainConfig` with any CLI overrides applied.
+    """
+    parser = _train_parser()
+
+    parser.add_argument(
+        "--eval-interval",
+        type=int,
+        default=100,
+        help="Run an evaluation phase every N training",
+    )
+
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=20,
+        help="Number of deterministic episodes to run during",
+    )
+
+    args = parser.parse_args()
+
+    return CurriculumTrainConfig(
+        board_size=args.board_size,
+        websocket_uri=args.websocket_uri,
+        n_filters=args.n_filters,
+        n_cnn_layers=args.n_cnn_layers,
+        n_fc=args.n_fc,
+        clip_epsilon=args.clip_epsilon,
+        entropy_coeff=args.entropy_coeff,
+        critic_coeff=args.critic_coeff,
+        gamma=args.gamma,
+        lmbda=args.lmbda,
+        frames_per_batch=args.frames_per_batch,
+        total_frames=args.total_frames,
+        n_epochs=args.n_epochs,
+        minibatch_size=args.minibatch_size,
+        lr=args.lr,
+        max_grad_norm=args.max_grad_norm,
+        log_interval=args.log_interval,
+        save_interval=args.save_interval,
+        checkpoint_dir=args.checkpoint_dir,
+        load_checkpoint=args.load_checkpoint,
+        eval_interval=args.eval_interval,
+        eval_episodes=args.eval_episodes,
     )
 
 

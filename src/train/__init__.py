@@ -4,9 +4,11 @@ from src.train.model import GoActorNet, GoCNN, GoValueNet
 from src.train.train import (
     TrainConfig,
     _parse_args,
+    _parse_args_curriculum,
     build_network,
     make_env,
     train,
+    train_with_curriculum,
 )
 
 __all__ = [
@@ -15,7 +17,9 @@ __all__ = [
     "GoValueNet",
     "TrainConfig",
     "_parse_args",
+    "_parse_args_curriculum",
     "build_network",
     "make_env",
     "train",
+    "train_with_curriculum",
 ]
