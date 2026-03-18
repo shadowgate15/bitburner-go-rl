@@ -7,12 +7,17 @@ exercise:
 * Illegal-move masking in the actor network.
 * ``build_network`` returns correctly-typed TorchRL modules.
 * ``TrainConfig`` default values and field types.
+* Checkpoint loading (``load_checkpoint`` field and ``--load-checkpoint`` CLI).
 """
 
+import sys
+from pathlib import Path
+
+import pytest
 import torch
 
 from src.train.model import GoActorNet, GoCNN, GoValueNet
-from src.train.train import TrainConfig, build_network
+from src.train.train import TrainConfig, _parse_args, build_network
 
 BOARD_SIZE = 5  # Use a small board to keep tests fast
 BATCH = 4
@@ -310,3 +315,142 @@ class TestTrainConfig:
     def test_total_frames_positive(self) -> None:
         """total_frames must be positive in default config."""
         assert TrainConfig().total_frames > 0
+
+    def test_default_load_checkpoint_is_none(self) -> None:
+        """load_checkpoint must default to None."""
+        assert TrainConfig().load_checkpoint is None
+
+    def test_custom_load_checkpoint(self) -> None:
+        """TrainConfig must accept a custom load_checkpoint path."""
+        cfg = TrainConfig(load_checkpoint="checkpoints/checkpoint_00010.pt")
+        assert cfg.load_checkpoint == "checkpoints/checkpoint_00010.pt"
+
+
+# ---------------------------------------------------------------------------
+# Checkpoint loading
+# ---------------------------------------------------------------------------
+
+
+class TestCheckpointLoading:
+    """Tests for the checkpoint save/load round-trip."""
+
+    def _make_cfg(self) -> TrainConfig:
+        """Return a TrainConfig suitable for fast testing."""
+        return TrainConfig(
+            board_size=BOARD_SIZE,
+            n_filters=16,
+            n_cnn_layers=1,
+            n_fc=32,
+        )
+
+    def test_load_checkpoint_restores_actor_weights(self, tmp_path: Path) -> None:
+        """Actor weights loaded from a checkpoint must match the saved ones."""
+        cfg = self._make_cfg()
+        device = torch.device("cpu")
+        actor, critic = build_network(cfg, device)
+
+        # Modify actor weights so they differ from freshly-initialised ones.
+        with torch.no_grad():
+            for p in actor.parameters():
+                p.fill_(0.42)
+
+        # Save checkpoint.
+        ckpt_path = tmp_path / "checkpoint_test.pt"
+        optimizer = torch.optim.Adam(list(actor.parameters()) + list(critic.parameters()))
+        torch.save(
+            {
+                "iter": 5,
+                "actor_state_dict": actor.state_dict(),
+                "critic_state_dict": critic.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "cfg": cfg,
+            },
+            ckpt_path,
+        )
+
+        # Build fresh networks and load the checkpoint.
+        actor2, critic2 = build_network(cfg, device)
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        actor2.load_state_dict(ckpt["actor_state_dict"])
+        critic2.load_state_dict(ckpt["critic_state_dict"])
+
+        # All actor parameters must match.
+        for p_orig, p_loaded in zip(actor.parameters(), actor2.parameters()):
+            assert torch.allclose(p_orig, p_loaded)
+
+    def test_load_checkpoint_restores_critic_weights(self, tmp_path: Path) -> None:
+        """Critic weights loaded from a checkpoint must match the saved ones."""
+        cfg = self._make_cfg()
+        device = torch.device("cpu")
+        actor, critic = build_network(cfg, device)
+
+        with torch.no_grad():
+            for p in critic.parameters():
+                p.fill_(1.23)
+
+        ckpt_path = tmp_path / "checkpoint_critic.pt"
+        optimizer = torch.optim.Adam(list(actor.parameters()) + list(critic.parameters()))
+        torch.save(
+            {
+                "iter": 10,
+                "actor_state_dict": actor.state_dict(),
+                "critic_state_dict": critic.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "cfg": cfg,
+            },
+            ckpt_path,
+        )
+
+        actor2, critic2 = build_network(cfg, device)
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        actor2.load_state_dict(ckpt["actor_state_dict"])
+        critic2.load_state_dict(ckpt["critic_state_dict"])
+
+        for p_orig, p_loaded in zip(critic.parameters(), critic2.parameters()):
+            assert torch.allclose(p_orig, p_loaded)
+
+    def test_load_checkpoint_iter_is_stored(self, tmp_path: Path) -> None:
+        """The checkpoint must store and restore the iteration counter."""
+        cfg = self._make_cfg()
+        device = torch.device("cpu")
+        actor, critic = build_network(cfg, device)
+        optimizer = torch.optim.Adam(list(actor.parameters()) + list(critic.parameters()))
+
+        ckpt_path = tmp_path / "checkpoint_iter.pt"
+        torch.save(
+            {
+                "iter": 42,
+                "actor_state_dict": actor.state_dict(),
+                "critic_state_dict": critic.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "cfg": cfg,
+            },
+            ckpt_path,
+        )
+
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        assert ckpt["iter"] == 42
+
+
+# ---------------------------------------------------------------------------
+# CLI --load-checkpoint argument
+# ---------------------------------------------------------------------------
+
+
+class TestParseArgsLoadCheckpoint:
+    """Tests for the ``--load-checkpoint`` CLI argument."""
+
+    def test_default_is_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """``--load-checkpoint`` must default to None when not provided."""
+        monkeypatch.setattr(sys, "argv", ["train"])
+        cfg = _parse_args()
+        assert cfg.load_checkpoint is None
+
+    def test_load_checkpoint_arg(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """``--load-checkpoint`` must set load_checkpoint on the config."""
+        ckpt = str(tmp_path / "ckpt.pt")
+        monkeypatch.setattr(sys, "argv", ["train", "--load-checkpoint", ckpt])
+        cfg = _parse_args()
+        assert cfg.load_checkpoint == ckpt
