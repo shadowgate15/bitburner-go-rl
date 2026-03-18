@@ -267,4 +267,42 @@ class GoValueNet(nn.Module):
         return value
 
 
-__all__ = ["GoActorNet", "GoCNN", "GoValueNet"]
+def transfer_conv_weights(
+    old_actor: GoActorNet,
+    new_actor: GoActorNet,
+    old_critic: GoValueNet,
+    new_critic: GoValueNet,
+) -> None:
+    """Copy board-size-independent weights from old networks to new ones.
+
+    When the curriculum moves to a different board size the CNN
+    backbone and value head weights learned on the previous board size
+    can be re-used.  The convolutional layers are purely spatial filters
+    whose weight shapes depend only on *in_channels* and *n_filters*
+    (not on *board_size*), and the value head only depends on *n_fc*.
+
+    **Components transferred:**
+
+    * ``GoActorNet.cnn.conv`` - conv + BN stack (actor and critic)
+    * ``GoValueNet.cnn.conv`` - conv + BN stack
+    * ``GoValueNet.value_head`` - value MLP (input = *n_fc*, constant)
+
+    **Components intentionally left fresh** (board-size-dependent):
+
+    * ``GoCNN.fc`` - ``Linear(n_filters * board_size^2, n_fc)``
+    * ``GoActorNet.policy_head`` - ``Linear(n_fc, board_size^2 + 1)``
+
+    Args:
+        old_actor: Actor network trained on the previous board size.
+        new_actor: Freshly initialised actor for the new board size.
+        old_critic: Critic network trained on the previous board size.
+        new_critic: Freshly initialised critic for the new board size.
+    """
+    new_actor.cnn.conv.load_state_dict(old_actor.cnn.conv.state_dict())
+    new_critic.cnn.conv.load_state_dict(old_critic.cnn.conv.state_dict())
+    new_critic.value_head.load_state_dict(
+        old_critic.value_head.state_dict()
+    )
+
+
+__all__ = ["GoActorNet", "GoCNN", "GoValueNet", "transfer_conv_weights"]

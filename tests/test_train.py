@@ -9,6 +9,8 @@ exercise:
 * ``TrainConfig`` default values and field types.
 * Checkpoint loading (``load_checkpoint`` field and ``--load-checkpoint`` CLI).
 * ``CurriculumTrainConfig`` defaults and curriculum board-size alignment.
+* ``transfer_conv_weights`` preserves learned weights across board-size
+  transitions.
 """
 
 import sys
@@ -18,7 +20,12 @@ import pytest
 import torch
 
 from src.curriculum.curriculum import BOARD_SIZES, GoCurriculumManager
-from src.train.model import GoActorNet, GoCNN, GoValueNet
+from src.train.model import (
+    GoActorNet,
+    GoCNN,
+    GoValueNet,
+    transfer_conv_weights,
+)
 from src.train.train import (
     CurriculumTrainConfig,
     TrainConfig,
@@ -603,3 +610,157 @@ class TestCurriculumBoardSizeAlignment:
         td = TensorDict({"observation": obs}, batch_size=[1])
         out = actor(td)
         assert "action" in out
+
+
+# ---------------------------------------------------------------------------
+# transfer_conv_weights
+# ---------------------------------------------------------------------------
+
+
+class TestTransferConvWeights:
+    """Tests for transfer_conv_weights across board-size transitions.
+
+    When the curriculum advances to a new board size the convolutional
+    stack (board-size-independent) and the value head (also independent)
+    should carry over to the new networks; the FC projection and policy
+    head are tied to board_size and must be reinitialised.
+    """
+
+    # Small nets so the tests run fast.
+    _N_FILTERS = 8
+    _N_LAYERS = 1
+    _N_FC = 16
+
+    def _make_nets(
+        self, board_size: int
+    ) -> tuple[GoActorNet, GoValueNet]:
+        """Return a (GoActorNet, GoValueNet) pair for *board_size*."""
+        actor = GoActorNet(
+            board_size=board_size,
+            n_filters=self._N_FILTERS,
+            n_cnn_layers=self._N_LAYERS,
+            n_fc=self._N_FC,
+        )
+        critic = GoValueNet(
+            board_size=board_size,
+            n_filters=self._N_FILTERS,
+            n_cnn_layers=self._N_LAYERS,
+            n_fc=self._N_FC,
+        )
+        return actor, critic
+
+    def test_actor_conv_weights_transferred(self) -> None:
+        """Actor conv stack must match old actor after transfer."""
+        old_actor, old_critic = self._make_nets(5)
+        new_actor, new_critic = self._make_nets(7)
+        transfer_conv_weights(old_actor, new_actor, old_critic, new_critic)
+        for p_old, p_new in zip(
+            old_actor.cnn.conv.parameters(),
+            new_actor.cnn.conv.parameters(),
+            strict=True,
+        ):
+            assert torch.allclose(p_old, p_new)
+
+    def test_critic_conv_weights_transferred(self) -> None:
+        """Critic conv stack must match old critic after transfer."""
+        old_actor, old_critic = self._make_nets(5)
+        new_actor, new_critic = self._make_nets(7)
+        transfer_conv_weights(old_actor, new_actor, old_critic, new_critic)
+        for p_old, p_new in zip(
+            old_critic.cnn.conv.parameters(),
+            new_critic.cnn.conv.parameters(),
+            strict=True,
+        ):
+            assert torch.allclose(p_old, p_new)
+
+    def test_critic_value_head_transferred(self) -> None:
+        """Critic value_head must match old critic after transfer."""
+        old_actor, old_critic = self._make_nets(5)
+        new_actor, new_critic = self._make_nets(7)
+        transfer_conv_weights(old_actor, new_actor, old_critic, new_critic)
+        for p_old, p_new in zip(
+            old_critic.value_head.parameters(),
+            new_critic.value_head.parameters(),
+            strict=True,
+        ):
+            assert torch.allclose(p_old, p_new)
+
+    def test_actor_fc_not_transferred(self) -> None:
+        """Actor FC layer must NOT be copied (input dim is board-size dep)."""
+        old_actor, old_critic = self._make_nets(5)
+        new_actor, new_critic = self._make_nets(7)
+        # The fc Linear input sizes differ, so weight shapes differ.
+        old_fc_shape = old_actor.cnn.fc[0].weight.shape
+        new_fc_shape_before = new_actor.cnn.fc[0].weight.shape
+        assert old_fc_shape != new_fc_shape_before  # sanity: sizes differ
+        transfer_conv_weights(old_actor, new_actor, old_critic, new_critic)
+        # Shape must still differ after transfer (was not overwritten).
+        assert new_actor.cnn.fc[0].weight.shape == new_fc_shape_before
+
+    def test_policy_head_not_transferred(self) -> None:
+        """Policy head must NOT be copied (output dim is board-size dep)."""
+        old_actor, old_critic = self._make_nets(5)
+        new_actor, new_critic = self._make_nets(7)
+        old_ph_shape = old_actor.policy_head.weight.shape
+        new_ph_shape_before = new_actor.policy_head.weight.shape
+        assert old_ph_shape != new_ph_shape_before  # sanity: sizes differ
+        transfer_conv_weights(old_actor, new_actor, old_critic, new_critic)
+        assert new_actor.policy_head.weight.shape == new_ph_shape_before
+
+    def test_new_networks_forward_after_transfer(self) -> None:
+        """New actor and critic must forward-pass correctly after transfer."""
+        old_actor, old_critic = self._make_nets(5)
+        new_actor, new_critic = self._make_nets(7)
+        transfer_conv_weights(old_actor, new_actor, old_critic, new_critic)
+        obs = _make_obs(batch=2, board_size=7)
+        logits = new_actor(obs)
+        value = new_critic(obs)
+        assert logits.shape == (2, 7 * 7 + 1)
+        assert value.shape == (2, 1)
+
+    def test_transfer_does_not_mutate_old_networks(self) -> None:
+        """Old network weights must be unchanged after transfer."""
+        old_actor, old_critic = self._make_nets(5)
+        # Record original weights.
+        old_conv_data = [
+            p.clone()
+            for p in old_actor.cnn.conv.parameters()
+        ]
+        old_vh_data = [
+            p.clone()
+            for p in old_critic.value_head.parameters()
+        ]
+        new_actor, new_critic = self._make_nets(7)
+        transfer_conv_weights(old_actor, new_actor, old_critic, new_critic)
+        for orig, after in zip(
+            old_conv_data,
+            old_actor.cnn.conv.parameters(),
+            strict=True,
+        ):
+            assert torch.allclose(orig, after)
+        for orig, after in zip(
+            old_vh_data,
+            old_critic.value_head.parameters(),
+            strict=True,
+        ):
+            assert torch.allclose(orig, after)
+
+    def test_same_board_size_transfer_preserves_all_weights(
+        self,
+    ) -> None:
+        """Transfer between equal-size nets must produce identical weights."""
+        old_actor, old_critic = self._make_nets(9)
+        new_actor, new_critic = self._make_nets(9)
+        transfer_conv_weights(old_actor, new_actor, old_critic, new_critic)
+        for p_old, p_new in zip(
+            old_actor.cnn.conv.parameters(),
+            new_actor.cnn.conv.parameters(),
+            strict=True,
+        ):
+            assert torch.allclose(p_old, p_new)
+        for p_old, p_new in zip(
+            old_critic.value_head.parameters(),
+            new_critic.value_head.parameters(),
+            strict=True,
+        ):
+            assert torch.allclose(p_old, p_new)

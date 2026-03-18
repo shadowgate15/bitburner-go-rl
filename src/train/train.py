@@ -47,7 +47,7 @@ from torchrl.objectives.value import GAE
 
 from src.curriculum.curriculum import BOARD_SIZES, GoCurriculumManager
 from src.env.go_env import TorchRLGoEnv
-from src.train.model import GoActorNet, GoValueNet
+from src.train.model import GoActorNet, GoValueNet, transfer_conv_weights
 
 try:
     from torch.distributions import Categorical
@@ -640,6 +640,12 @@ def train_with_curriculum(
     ``SyncDataCollector`` to be **fully rebuilt** because the CNN's
     FC layer is fixed to ``n_filters * board_size**2`` inputs at
     construction time and cannot handle a different board size.
+    **Board-size-independent weights are preserved**: the convolutional
+    stack (``cnn.conv``) in both networks and the value head
+    (``value_head``) in the critic are copied to the new networks via
+    :func:`~src.train.model.transfer_conv_weights` so that features
+    learned so far carry over.  Only the size-dependent layers
+    (``cnn.fc``, ``policy_head``) are freshly reinitialised.
     Opponent-only changes just update ``train_env.opponent`` so the
     next automatic episode reset picks up the new setting.
 
@@ -891,16 +897,39 @@ def train_with_curriculum(
                 # board size.  Rebuild every size-dependent component:
                 # network, loss, optimizer, advantage module, replay
                 # buffer, environment, and collector.
+                #
+                # Preserve continuity: board-size-independent weights
+                # (cnn.conv on both networks, value_head on the critic)
+                # are copied to the new networks so that features and
+                # value estimates learned so far are not thrown away.
+                # Only cnn.fc and policy_head — whose shapes are tied
+                # to board_size — are freshly reinitialised.
                 print(
                     f"[train_curriculum] Board size changed "
                     f"{prev_board_size} → {new_board_size}. "
-                    "Rebuilding networks and collector ..."
+                    "Rebuilding networks (transferring conv weights) "
+                    "and collector ..."
                 )
                 collector.shutdown()
+
+                # Capture old raw nets before replacing the wrappers.
+                old_actor_net: GoActorNet = actor.module.module
+                old_critic_net: GoValueNet = critic.module
 
                 # New networks for the new board size.
                 size_cfg = replace(cfg, board_size=new_board_size)
                 actor, critic = build_network(size_cfg, device)
+
+                # Transfer board-size-independent weights so that
+                # previously learned conv features and value estimates
+                # carry over to the larger/smaller board.
+                transfer_conv_weights(
+                    old_actor_net,
+                    actor.module.module,  # GoActorNet inside wrapper
+                    old_critic_net,
+                    critic.module,  # GoValueNet inside wrapper
+                )
+
                 advantage_module = GAE(
                     gamma=cfg.gamma,
                     lmbda=cfg.lmbda,
