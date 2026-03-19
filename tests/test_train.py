@@ -8,6 +8,7 @@ exercise:
 * ``build_network`` returns correctly-typed TorchRL modules.
 * ``TrainConfig`` default values and field types.
 * Checkpoint loading (``load_checkpoint`` field and ``--load-checkpoint`` CLI).
+* ``CurriculumTrainConfig`` defaults.
 """
 
 import sys
@@ -16,8 +17,18 @@ from pathlib import Path
 import pytest
 import torch
 
-from src.train.model import GoActorNet, GoCNN, GoValueNet
-from src.train.train import TrainConfig, _parse_args, build_network
+from src.curriculum.curriculum import GoCurriculumManager
+from src.train.model import (
+    GoActorNet,
+    GoCNN,
+    GoValueNet,
+)
+from src.train.train import (
+    CurriculumTrainConfig,
+    TrainConfig,
+    _parse_args,
+    build_network,
+)
 
 BOARD_SIZE = 5  # Use a small board to keep tests fast
 BATCH = 4
@@ -272,6 +283,35 @@ class TestBuildNetwork:
         assert out["action"].shape == (BATCH,)
         assert out["action"].max().item() < n_actions
 
+    def test_actor_module_index_zero_is_logit_tdmodule(self) -> None:
+        """actor.module[0] must be the TensorDictModule producing logits.
+
+        In TorchRL 0.11.x ProbabilisticActor stores its sub-modules in a
+        ModuleList under ``actor.module``.  The evaluation helper
+        ``run_evaluation_episodes`` accesses ``actor.module[0]`` to get
+        the logit-producing TensorDictModule.  Calling ``actor.module``
+        directly raises ``NotImplementedError`` because ``ModuleList``
+        does not implement ``forward()``.
+        """
+        from tensordict import TensorDict
+        from tensordict.nn import TensorDictModule
+
+        cfg = self._make_cfg()
+        actor, _ = build_network(cfg, torch.device("cpu"))
+
+        logit_module = actor.module[0]
+        assert isinstance(logit_module, TensorDictModule)
+        assert "observation" in logit_module.in_keys
+        assert "logits" in logit_module.out_keys
+
+        # Must be callable and produce the correct output shape.
+        obs = _make_obs(batch=1, board_size=BOARD_SIZE)
+        td = TensorDict({"observation": obs}, batch_size=[1])
+        out = logit_module(td)
+        n_actions = BOARD_SIZE * BOARD_SIZE + 1
+        assert "logits" in out
+        assert out["logits"].shape == (1, n_actions)
+
     def test_critic_forward(self) -> None:
         """Critic must produce state_value from observation."""
         from tensordict import TensorDict
@@ -454,3 +494,39 @@ class TestParseArgsLoadCheckpoint:
         monkeypatch.setattr(sys, "argv", ["train", "--load-checkpoint", ckpt])
         cfg = _parse_args()
         assert cfg.load_checkpoint == ckpt
+
+
+# ---------------------------------------------------------------------------
+# CurriculumTrainConfig
+# ---------------------------------------------------------------------------
+
+
+class TestCurriculumTrainConfig:
+    """Tests for CurriculumTrainConfig defaults and board-size alignment."""
+
+    def test_default_eval_interval(self) -> None:
+        """Default eval_interval must be 100."""
+        assert CurriculumTrainConfig().eval_interval == 100
+
+    def test_default_eval_episodes(self) -> None:
+        """Default eval_episodes must be 20."""
+        assert CurriculumTrainConfig().eval_episodes == 20
+
+    def test_default_curriculum_is_none(self) -> None:
+        """Default curriculum must be None."""
+        assert CurriculumTrainConfig().curriculum is None
+
+    def test_inherits_board_size_from_train_config(self) -> None:
+        """CurriculumTrainConfig must inherit board_size=9 from TrainConfig."""
+        assert CurriculumTrainConfig().board_size == 9
+
+    def test_custom_eval_interval(self) -> None:
+        """CurriculumTrainConfig must accept a custom eval_interval."""
+        cfg = CurriculumTrainConfig(eval_interval=50)
+        assert cfg.eval_interval == 50
+
+    def test_custom_curriculum(self) -> None:
+        """CurriculumTrainConfig must accept a pre-built curriculum."""
+        m = GoCurriculumManager()
+        cfg = CurriculumTrainConfig(curriculum=m)
+        assert cfg.curriculum is m

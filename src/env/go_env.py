@@ -105,17 +105,25 @@ class TorchRLGoEnv(EnvBase):
         self,
         board_size: int = 9,
         websocket_uri: str = "ws://localhost:8765",
+        opponent: str = "Netburners",
     ) -> None:
         """Initialise the environment and its specs.
 
         Args:
             board_size: Side length of the board.
             websocket_uri: WebSocket URI to connect to.
+            opponent: Name of the built-in BitBurner opponent to play
+                against.  Can be updated at any time by assigning
+                ``env.opponent = "..."``; the new value is used on the
+                next episode reset.
         """
         super().__init__()
 
         self.board_size = board_size
         self.websocket_uri = websocket_uri
+        #: Current opponent - mutable so the curriculum can update it
+        #: between episodes without rebuilding the environment.
+        self.opponent: str = opponent
 
         # Lazy client - created on first use so the environment object can be
         # constructed without a running server (useful for spec inspection).
@@ -165,24 +173,59 @@ class TorchRLGoEnv(EnvBase):
         # Done flag: scalar boolean.
         self.done_spec = Binary(shape=(1,), dtype=torch.bool)
 
+    def rebuild_specs(self) -> None:
+        """Rebuild observation, action, reward, and done specs.
+
+        Call this after changing :attr:`board_size` so that the specs
+        reflect the new board dimensions.  The curriculum training loop
+        calls this automatically when it detects a board-size change.
+        """
+        self._make_specs()
+
     # ------------------------------------------------------------------
     # TorchRL interface
     # ------------------------------------------------------------------
 
-    def _reset(self, tensordict: TensorDict | None = None) -> TensorDict:
+    def _reset(
+        self,
+        tensordict: TensorDict | None = None,
+        opponent: str | None = None,
+        board_size: int | None = None,
+    ) -> TensorDict:
         """Reset the environment and return the initial observation.
 
         Sends a ``reset`` message to the Bitburner server, receives the
         initial board state, and returns a :class:`~tensordict.TensorDict`
         containing the encoded observation and ``done=False``.
 
+        When *opponent* or *board_size* are provided they override the
+        environment's stored values (``self.opponent`` /
+        ``self.board_size``).  If *board_size* changes, the observation
+        and action specs are rebuilt automatically.
+
         Args:
             tensordict: Unused; present for API compatibility.
+            opponent: Name of the built-in opponent to use for this
+                episode.  When ``None``, ``self.opponent`` is used.
+            board_size: Side length of the board for this episode.
+                When ``None``, ``self.board_size`` is used.
 
         Returns:
             TensorDict with keys ``"observation"`` and ``"done"``.
         """
-        response = self.client.reset()
+        # Apply overrides and persist them on the instance so that
+        # subsequent automatic resets (triggered by done=True inside
+        # the collector) use the same curriculum settings.
+        if opponent is not None:
+            self.opponent = opponent
+        if board_size is not None and board_size != self.board_size:
+            self.board_size = board_size
+            self.rebuild_specs()
+
+        response = self.client.reset(
+            opponent=self.opponent,
+            board_size=self.board_size,
+        )
 
         board_state: list[str] = response["board"]
         current_player: str = response.get("current_player", "black")

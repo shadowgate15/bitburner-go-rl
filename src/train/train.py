@@ -11,6 +11,11 @@ Pipeline
 6. Run *K* epochs of mini-batch PPO updates via ``ClipPPOLoss``.
 7. Log statistics and periodically save checkpoints.
 
+Curriculum training adds periodic evaluation phases that feed metrics
+into :class:`~src.curriculum.curriculum.GoCurriculumManager`, which
+dynamically adjusts opponent difficulty and board size (see
+:func:`train_with_curriculum`).
+
 Usage (CLI)::
 
     python -m src.train.train --board-size 9 --total-frames 200000
@@ -28,16 +33,19 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+from tensordict import TensorDict
 from tensordict.nn import TensorDictModule
 from torchrl.collectors import SyncDataCollector
 from torchrl.data import LazyTensorStorage, ReplayBuffer
 from torchrl.data.replay_buffers.samplers import (
     SamplerWithoutReplacement,
 )
+from torchrl.envs.utils import step_mdp
 from torchrl.modules import ProbabilisticActor, ValueOperator
 from torchrl.objectives import ClipPPOLoss
 from torchrl.objectives.value import GAE
 
+from src.curriculum.curriculum import GoCurriculumManager
 from src.env.go_env import TorchRLGoEnv
 from src.train.model import GoActorNet, GoValueNet
 
@@ -117,6 +125,35 @@ class TrainConfig:
 
     # Internal: populated by build_network() / train()
     _extra: dict = field(default_factory=dict, repr=False)
+
+
+@dataclass
+class CurriculumTrainConfig(TrainConfig):
+    """Training configuration with curriculum-learning settings.
+
+    Extends :class:`TrainConfig` with parameters that control how
+    often evaluation phases are run and how many episodes are used for
+    each evaluation.
+
+    Attributes:
+        eval_interval: Run an evaluation phase every N training
+            iterations (PPO updates).  After evaluation,
+            :class:`~src.curriculum.curriculum.GoCurriculumManager`
+            decides whether to advance or retreat the difficulty.
+        eval_episodes: Number of deterministic episodes to run during
+            each evaluation phase.  More episodes give a more reliable
+            win-rate estimate at the cost of more environment
+            interactions.
+        curriculum: Pre-constructed
+            :class:`~src.curriculum.curriculum.GoCurriculumManager`
+            instance.  When ``None``, a manager with default settings
+            is created automatically at the start of training.
+    """
+
+    # ---- Curriculum ----
+    eval_interval: int = 100
+    eval_episodes: int = 20
+    curriculum: GoCurriculumManager | None = field(default=None, repr=False)
 
 
 # ---------------------------------------------------------------------------
@@ -218,6 +255,110 @@ def build_network(
     assert n_actions == cfg.board_size**2 + 1
 
     return actor, critic
+
+
+# ---------------------------------------------------------------------------
+# Curriculum evaluation helper
+# ---------------------------------------------------------------------------
+
+
+def run_evaluation_episodes(
+    actor: ProbabilisticActor,
+    eval_env: TorchRLGoEnv,
+    n_episodes: int,
+) -> dict[str, float]:
+    """Run evaluation episodes with a deterministic (greedy) policy.
+
+    The actor is switched to ``eval()`` mode so that BatchNorm uses its
+    running statistics and no stochastic noise is applied.  Greedy
+    action selection is approximated by argmax over the masked logits
+    produced by the actor's underlying
+    :class:`~src.train.model.GoActorNet`.
+
+    The logit module is accessed via ``actor.module[0]`` (the first
+    element of the ``ModuleList`` that TorchRL's
+    ``ProbabilisticActor`` uses to store its sub-modules in 0.11.x).
+    This is the ``TensorDictModule`` wrapping ``GoActorNet``.
+
+    Win detection: a positive cumulative episode reward is counted as a
+    win.  The Bitburner IPvGO server returns a positive terminal reward
+    when the agent (black) wins and a negative reward when it loses.
+
+    Args:
+        actor: The :class:`~torchrl.modules.ProbabilisticActor` that
+            wraps the policy network.
+        eval_env: A fully constructed
+            :class:`~src.env.go_env.TorchRLGoEnv` instance with the
+            desired opponent and board size already set via
+            ``eval_env.opponent`` / ``eval_env.board_size``.
+        n_episodes: Number of complete episodes to play.  Must be > 0.
+
+    Returns:
+        Dictionary with keys:
+
+        * ``"win_rate"`` - fraction of episodes won (float in [0, 1]).
+        * ``"avg_reward"`` - mean cumulative reward across episodes.
+        * ``"game_length"`` - mean number of steps per episode.
+
+    Raises:
+        ValueError: If *n_episodes* is not positive.
+    """
+    if n_episodes <= 0:
+        raise ValueError(f"n_episodes must be positive, got {n_episodes}")
+
+    # In TorchRL 0.11.x ProbabilisticActor stores its sub-modules in a
+    # ModuleList under `actor.module`.  The first element is the
+    # TensorDictModule wrapping GoActorNet (in_keys=["observation"],
+    # out_keys=["logits"]).  Calling it with a TensorDict containing
+    # "observation" populates "logits" - the masked log-unnormalized
+    # policy scores.
+    logit_module = actor.module[0]  # TensorDictModule(GoActorNet)
+
+    actor.eval()
+    wins = 0
+    total_rewards: list[float] = []
+    game_lengths: list[int] = []
+
+    with torch.no_grad():
+        for _ in range(n_episodes):
+            # Reset with current curriculum settings already on env.
+            td = eval_env.reset()
+            episode_reward = 0.0
+            steps = 0
+            done = False
+
+            while not done:
+                # Greedy action: forward through logit module, argmax.
+                logit_td = TensorDict(
+                    {"observation": td["observation"].unsqueeze(0)},
+                    batch_size=[1],
+                )
+                logit_td = logit_module(logit_td)
+                action = int(logit_td["logits"].argmax(dim=-1).item())
+                td["action"] = torch.tensor(action, dtype=torch.int64)
+
+                # Step the environment.
+                td = eval_env.step(td)
+                done = bool(td["next", "done"].item())
+                episode_reward += float(td["next", "reward"].item())
+                steps += 1
+
+                # Prepare TensorDict for the next step.
+                td = step_mdp(td)
+
+            # Positive terminal reward means the agent (black) won.
+            if episode_reward > 0:
+                wins += 1
+            total_rewards.append(episode_reward)
+            game_lengths.append(steps)
+
+    actor.train()
+
+    return {
+        "win_rate": wins / n_episodes,
+        "avg_reward": sum(total_rewards) / n_episodes,
+        "game_length": sum(game_lengths) / n_episodes,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -471,16 +612,289 @@ def train(cfg: TrainConfig | None = None) -> None:
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# Curriculum training loop
 # ---------------------------------------------------------------------------
 
 
-def _parse_args() -> TrainConfig:
-    """Parse command-line arguments into a :class:`TrainConfig`.
+def train_with_curriculum(
+    cfg: CurriculumTrainConfig | None = None,
+) -> None:
+    """Run a PPO training loop with integrated curriculum scheduling.
 
-    Returns:
-        Populated :class:`TrainConfig` with any CLI overrides applied.
+    This function extends :func:`train` with periodic evaluation phases.
+    Every ``cfg.eval_interval`` iterations the training collector is
+    paused, ``cfg.eval_episodes`` episodes are played with a greedy
+    (deterministic) policy, and the resulting metrics are fed to the
+    :class:`~src.curriculum.curriculum.GoCurriculumManager`.
+
+    Curriculum progression (opponent-only):
+
+    * **Advance**: when the smoothed win rate exceeds the upper
+      threshold the opponent difficulty increases.
+    * **Retreat**: when the smoothed win rate falls below the lower
+      threshold the opponent difficulty decreases.
+    * **No change**: when the win rate is between the two thresholds.
+
+    The board size remains fixed at ``cfg.board_size`` throughout
+    training.  Opponent changes are applied by updating
+    ``train_env.opponent`` so the next episode reset picks up the
+    new setting without rebuilding the collector.
+
+    Args:
+        cfg: Curriculum training configuration.  Defaults to
+            ``CurriculumTrainConfig()`` (all default hyper-parameters).
     """
+    if cfg is None:
+        cfg = CurriculumTrainConfig()
+
+    # Initialise curriculum manager.
+    curriculum = (
+        cfg.curriculum
+        if cfg.curriculum is not None
+        else GoCurriculumManager()
+    )
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[train_curriculum] Using device: {device}")
+
+    # ------------------------------------------------------------------
+    # Build networks
+    # ------------------------------------------------------------------
+    actor, critic = build_network(cfg, device)
+    print("[train_curriculum] Networks built.")
+
+    # ------------------------------------------------------------------
+    # Load checkpoint (optional)
+    # ------------------------------------------------------------------
+    start_iter = 0
+    if cfg.load_checkpoint is not None:
+        ckpt_path = Path(cfg.load_checkpoint)
+        print(f"[train_curriculum] Loading checkpoint from {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+        actor.load_state_dict(ckpt["actor_state_dict"])
+        critic.load_state_dict(ckpt["critic_state_dict"])
+        start_iter = ckpt["iter"]
+        print(f"[train_curriculum] Resumed from iteration {start_iter}.")
+
+    # ------------------------------------------------------------------
+    # Advantage estimator and PPO loss
+    # ------------------------------------------------------------------
+    advantage_module = GAE(
+        gamma=cfg.gamma,
+        lmbda=cfg.lmbda,
+        value_network=critic,
+        average_gae=False,
+    )
+    loss_module = ClipPPOLoss(
+        actor_network=actor,
+        critic_network=critic,
+        clip_epsilon=cfg.clip_epsilon,
+        entropy_bonus=True,
+        entropy_coeff=cfg.entropy_coeff,
+        critic_coeff=cfg.critic_coeff,
+        normalize_advantage=False,
+    )
+
+    all_params = list(loss_module.parameters())
+    optimizer = torch.optim.Adam(all_params, lr=cfg.lr)
+
+    if cfg.load_checkpoint is not None:
+        ckpt = torch.load(
+            Path(cfg.load_checkpoint),
+            map_location=device,
+            weights_only=False,
+        )
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+
+    # ------------------------------------------------------------------
+    # Initialise training environment and collector
+    # ------------------------------------------------------------------
+    # Keep a direct reference to the training env so we can update
+    # env.opponent between iterations without rebuilding the collector.
+    def _build_collector(
+        train_env: TorchRLGoEnv,
+    ) -> SyncDataCollector:
+        """Create a SyncDataCollector bound to *train_env*."""
+        return SyncDataCollector(
+            create_env_fn=train_env,
+            policy=actor,
+            frames_per_batch=cfg.frames_per_batch,
+            total_frames=cfg.total_frames,
+            device=device,
+        )
+
+    init_cfg = curriculum.get_current_config()
+    train_env = TorchRLGoEnv(
+        board_size=cfg.board_size,
+        websocket_uri=cfg.websocket_uri,
+        opponent=str(init_cfg["opponent"]),
+    )
+    collector = _build_collector(train_env)
+
+    # Separate environment used exclusively for evaluation episodes.
+    # It is created fresh so it doesn't interfere with the collector.
+    eval_env = TorchRLGoEnv(
+        board_size=cfg.board_size,
+        websocket_uri=cfg.websocket_uri,
+        opponent=str(init_cfg["opponent"]),
+    )
+
+    # ------------------------------------------------------------------
+    # Replay buffer (on-policy: cleared each iteration)
+    # ------------------------------------------------------------------
+    replay_buffer = ReplayBuffer(
+        storage=LazyTensorStorage(
+            max_size=cfg.frames_per_batch,
+            device=device,
+        ),
+        sampler=SamplerWithoutReplacement(),
+        batch_size=cfg.minibatch_size,
+    )
+
+    # ------------------------------------------------------------------
+    # Checkpointing setup
+    # ------------------------------------------------------------------
+    ckpt_dir = Path(cfg.checkpoint_dir)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    # ------------------------------------------------------------------
+    # Training loop
+    # ------------------------------------------------------------------
+    total_iters = cfg.total_frames // cfg.frames_per_batch
+    iter_idx = start_iter
+    t0 = time.time()
+
+    print(
+        f"[train_curriculum] Starting: {total_iters} iterations, "
+        f"{cfg.total_frames:,} total frames\n"
+        f"  initial opponent  = {curriculum.current_opponent}\n"
+        f"  board_size        = {cfg.board_size}"
+    )
+
+    for data in collector:
+        iter_idx += 1
+
+        # --------------------------------------------------------------
+        # GAE + advantage normalisation
+        # --------------------------------------------------------------
+        with torch.no_grad():
+            advantage_module(data)
+        adv = data["advantage"]
+        data["advantage"] = (adv - adv.mean()) / (adv.std() + 1e-8)
+
+        # --------------------------------------------------------------
+        # Replay buffer + PPO update
+        # --------------------------------------------------------------
+        replay_buffer.empty()
+        replay_buffer.extend(data)
+        epoch_losses: list[float] = []
+
+        for _epoch in range(cfg.n_epochs):
+            for batch in replay_buffer:
+                batch = batch.to(device)
+                loss_dict = loss_module(batch)
+                total_loss = (
+                    loss_dict["loss_objective"]
+                    + loss_dict["loss_critic"]
+                    + loss_dict["loss_entropy"]
+                )
+                optimizer.zero_grad()
+                total_loss.backward()
+                nn.utils.clip_grad_norm_(all_params, cfg.max_grad_norm)
+                optimizer.step()
+                epoch_losses.append(total_loss.item())
+
+        # --------------------------------------------------------------
+        # Logging
+        # --------------------------------------------------------------
+        if iter_idx % cfg.log_interval == 0:
+            elapsed = time.time() - t0
+            mean_reward = data["next", "reward"].mean().item()
+            mean_loss = (
+                sum(epoch_losses) / len(epoch_losses)
+                if epoch_losses
+                else float("nan")
+            )
+            frames_collected = iter_idx * cfg.frames_per_batch
+            fps = frames_collected / elapsed
+            print(
+                f"[iter {iter_idx:4d}/{total_iters}] "
+                f"frames={frames_collected:7,} "
+                f"fps={fps:6.0f} "
+                f"reward={mean_reward:+.4f} "
+                f"loss={mean_loss:.4f} "
+                f"opponent={curriculum.current_opponent!r}"
+            )
+
+        # --------------------------------------------------------------
+        # Curriculum evaluation phase (every eval_interval iterations)
+        # --------------------------------------------------------------
+        if iter_idx % cfg.eval_interval == 0:
+            print(
+                f"[train_curriculum] Evaluation at iter {iter_idx} "
+                f"({cfg.eval_episodes} episodes) ..."
+            )
+            # Sync eval env to current curriculum opponent.
+            eval_env.opponent = curriculum.current_opponent
+
+            metrics = run_evaluation_episodes(
+                actor=actor,
+                eval_env=eval_env,
+                n_episodes=cfg.eval_episodes,
+            )
+            print(
+                f"[train_curriculum]   win_rate={metrics['win_rate']:.3f}"
+                f"  avg_reward={metrics['avg_reward']:.4f}"
+                f"  game_length={metrics['game_length']:.1f}"
+            )
+
+            # Let curriculum decide the next difficulty level.
+            curriculum.update(metrics)
+            new_cfg = curriculum.get_current_config()
+
+            # Apply curriculum changes to the training environment.
+            train_env.opponent = str(new_cfg["opponent"])
+
+        # --------------------------------------------------------------
+        # Checkpointing
+        # --------------------------------------------------------------
+        if iter_idx % cfg.save_interval == 0:
+            ckpt_path = ckpt_dir / f"checkpoint_{iter_idx:05d}.pt"
+            torch.save(
+                {
+                    "iter": iter_idx,
+                    "actor_state_dict": actor.state_dict(),
+                    "critic_state_dict": critic.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "cfg": cfg,
+                    "curriculum_opponent_idx": (curriculum.opponent_idx),
+                },
+                ckpt_path,
+            )
+            print(f"[train_curriculum] Checkpoint saved → {ckpt_path}")
+
+    # Final checkpoint
+    final_path = ckpt_dir / "checkpoint_final.pt"
+    torch.save(
+        {
+            "iter": iter_idx,
+            "actor_state_dict": actor.state_dict(),
+            "critic_state_dict": critic.state_dict(),
+            "optimizer_state_dict": optimizer.state_dict(),
+            "cfg": cfg,
+            "curriculum_opponent_idx": curriculum.opponent_idx,
+        },
+        final_path,
+    )
+    print(
+        f"[train_curriculum] Training complete. "
+        f"Final checkpoint → {final_path}"
+    )
+
+    collector.shutdown()
+
+
+def _train_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Train a PPO Go agent against the Bitburner IPvGO engine."
     )
@@ -622,7 +1036,16 @@ def _parse_args() -> TrainConfig:
         ),
     )
 
-    args = parser.parse_args()
+    return parser
+
+
+def _parse_args() -> TrainConfig:
+    """Parse command-line arguments into a :class:`TrainConfig`.
+
+    Returns:
+        Populated :class:`TrainConfig` with any CLI overrides applied.
+    """
+    args = _train_parser().parse_args()
 
     return TrainConfig(
         board_size=args.board_size,
@@ -645,6 +1068,56 @@ def _parse_args() -> TrainConfig:
         save_interval=args.save_interval,
         checkpoint_dir=args.checkpoint_dir,
         load_checkpoint=args.load_checkpoint,
+    )
+
+
+def _parse_args_curriculum() -> CurriculumTrainConfig:
+    """Parse command-line arguments into a :class:`CurriculumTrainConfig`.
+
+    Returns:
+        Populated :class:`CurriculumTrainConfig` with any CLI overrides applied.
+    """
+    parser = _train_parser()
+
+    parser.add_argument(
+        "--eval-interval",
+        type=int,
+        default=100,
+        help="Run an evaluation phase every N training",
+    )
+
+    parser.add_argument(
+        "--eval-episodes",
+        type=int,
+        default=20,
+        help="Number of deterministic episodes to run during",
+    )
+
+    args = parser.parse_args()
+
+    return CurriculumTrainConfig(
+        board_size=args.board_size,
+        websocket_uri=args.websocket_uri,
+        n_filters=args.n_filters,
+        n_cnn_layers=args.n_cnn_layers,
+        n_fc=args.n_fc,
+        clip_epsilon=args.clip_epsilon,
+        entropy_coeff=args.entropy_coeff,
+        critic_coeff=args.critic_coeff,
+        gamma=args.gamma,
+        lmbda=args.lmbda,
+        frames_per_batch=args.frames_per_batch,
+        total_frames=args.total_frames,
+        n_epochs=args.n_epochs,
+        minibatch_size=args.minibatch_size,
+        lr=args.lr,
+        max_grad_norm=args.max_grad_norm,
+        log_interval=args.log_interval,
+        save_interval=args.save_interval,
+        checkpoint_dir=args.checkpoint_dir,
+        load_checkpoint=args.load_checkpoint,
+        eval_interval=args.eval_interval,
+        eval_episodes=args.eval_episodes,
     )
 
 

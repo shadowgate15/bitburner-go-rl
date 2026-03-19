@@ -75,14 +75,32 @@ class GoClient:
     # Public API
     # ------------------------------------------------------------------
 
-    def reset(self) -> dict[str, Any]:
+    def reset(
+        self,
+        opponent: str = "Netburners",
+        board_size: int = 9,
+    ) -> dict[str, Any]:
         """Ask the server to start a new game and return the initial state.
+
+        Args:
+            opponent: Name of the built-in BitBurner opponent to play
+                against (e.g. ``"Netburners"``, ``"Illuminati"``).
+            board_size: Side length of the square board (e.g. 5, 7,
+                9, or 13).
 
         Returns:
             Server response dict with keys ``board``, ``current_player``,
             and ``legal_moves``.
         """
-        return self._run(self._send_recv({"type": "reset"}))  # type: ignore[return-value]
+        return self._run(  # type: ignore[return-value]
+            self._send_recv(
+                {
+                    "type": "reset",
+                    "opponent": opponent,
+                    "board_size": board_size,
+                }
+            )
+        )
 
     def step(self, action: int) -> dict[str, Any]:
         """Send *action* to the server and return the updated game state.
