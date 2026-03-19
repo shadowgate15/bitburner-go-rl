@@ -283,6 +283,35 @@ class TestBuildNetwork:
         assert out["action"].shape == (BATCH,)
         assert out["action"].max().item() < n_actions
 
+    def test_actor_module_index_zero_is_logit_tdmodule(self) -> None:
+        """actor.module[0] must be the TensorDictModule producing logits.
+
+        In TorchRL 0.11.x ProbabilisticActor stores its sub-modules in a
+        ModuleList under ``actor.module``.  The evaluation helper
+        ``run_evaluation_episodes`` accesses ``actor.module[0]`` to get
+        the logit-producing TensorDictModule.  Calling ``actor.module``
+        directly raises ``NotImplementedError`` because ``ModuleList``
+        does not implement ``forward()``.
+        """
+        from tensordict import TensorDict
+        from tensordict.nn import TensorDictModule
+
+        cfg = self._make_cfg()
+        actor, _ = build_network(cfg, torch.device("cpu"))
+
+        logit_module = actor.module[0]
+        assert isinstance(logit_module, TensorDictModule)
+        assert "observation" in logit_module.in_keys
+        assert "logits" in logit_module.out_keys
+
+        # Must be callable and produce the correct output shape.
+        obs = _make_obs(batch=1, board_size=BOARD_SIZE)
+        td = TensorDict({"observation": obs}, batch_size=[1])
+        out = logit_module(td)
+        n_actions = BOARD_SIZE * BOARD_SIZE + 1
+        assert "logits" in out
+        assert out["logits"].shape == (1, n_actions)
+
     def test_critic_forward(self) -> None:
         """Critic must produce state_value from observation."""
         from tensordict import TensorDict

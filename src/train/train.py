@@ -275,9 +275,10 @@ def run_evaluation_episodes(
     produced by the actor's underlying
     :class:`~src.train.model.GoActorNet`.
 
-    The logit module is accessed via ``actor.module`` (the
-    ``TensorDictModule`` wrapping ``GoActorNet``), which is the
-    documented public attribute of ``ProbabilisticActor``.
+    The logit module is accessed via ``actor.module[0]`` (the first
+    element of the ``ModuleList`` that TorchRL's
+    ``ProbabilisticActor`` uses to store its sub-modules in 0.11.x).
+    This is the ``TensorDictModule`` wrapping ``GoActorNet``.
 
     Win detection: a positive cumulative episode reward is counted as a
     win.  The Bitburner IPvGO server returns a positive terminal reward
@@ -305,12 +306,13 @@ def run_evaluation_episodes(
     if n_episodes <= 0:
         raise ValueError(f"n_episodes must be positive, got {n_episodes}")
 
-    # actor.module is the TensorDictModule(GoActorNet) that was passed
-    # to ProbabilisticActor.  This is a documented attribute of
-    # TensorDictModuleBase (the parent class of ProbabilisticActor).
-    # Calling it with a TensorDict containing "observation" populates
-    # "logits" - the masked log-unnormalized policy scores.
-    logit_module = actor.module  # TensorDictModule
+    # In TorchRL 0.11.x ProbabilisticActor stores its sub-modules in a
+    # ModuleList under `actor.module`.  The first element is the
+    # TensorDictModule wrapping GoActorNet (in_keys=["observation"],
+    # out_keys=["logits"]).  Calling it with a TensorDict containing
+    # "observation" populates "logits" - the masked log-unnormalized
+    # policy scores.
+    logit_module = actor.module[0]  # TensorDictModule(GoActorNet)
 
     actor.eval()
     wins = 0
