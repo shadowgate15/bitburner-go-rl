@@ -19,13 +19,7 @@ init: ## Initialize the project
 
 ##@ Local development
 run: ## Run the application without Docker
-	$(ur) __main__.py
-
-train:
 	$(ur) __main__.py $(flag)
-
-train_with_curriculum:
-	$(ur) __train_curriculum__.py $(flag)
 
 test: ## Run the tests
 	$(ur) pytest -v

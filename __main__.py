@@ -1,7 +1,7 @@
 """Main entry point for the application."""
 
 from src.config.env import APP_STAGE, ENV_PATH
-from src.train import _parse_args, train
+from src.train import _parse_args_curriculum, train_with_curriculum
 from src.utils.logging import setup_logging
 
 
@@ -18,7 +18,7 @@ def main() -> None:
     logger.info(f"App stage: {APP_STAGE}")
     logger.info(f"Environment variables loaded from: {ENV_PATH}")
 
-    train(_parse_args())
+    train_with_curriculum(_parse_args_curriculum())
 
 
 if __name__ == "__main__":
