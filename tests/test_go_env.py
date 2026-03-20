@@ -1,11 +1,15 @@
-"""Tests for the TorchRL Go environment and GoClient."""
+"""Tests for the TorchRL Go environment and GoServer."""
 
+import asyncio
+import json
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 import torch
+import websockets
 
+from src.env.client import GoServer
 from src.env.go_env import TorchRLGoEnv, encode_board
 
 # ---------------------------------------------------------------------------
@@ -323,22 +327,185 @@ class TestTorchRLGoEnvHelpers:
         assert torch.equal(result_method, result_func)
 
 
-class TestGoClientLazy:
-    """Tests for the lazy GoClient creation inside TorchRLGoEnv."""
+class TestGoServerLazy:
+    """Tests for the lazy GoServer creation inside TorchRLGoEnv."""
 
     def test_client_not_created_on_init(self) -> None:
-        """The client must not be created until first access."""
+        """The server must not be created until first access."""
         env = TorchRLGoEnv(board_size=BOARD_SIZE)
         assert env._client is None
 
     def test_client_created_on_access(self) -> None:
-        """Accessing the client property should create it."""
+        """Accessing the client property should create a GoServer."""
         env = TorchRLGoEnv(
             board_size=BOARD_SIZE,
             websocket_uri="ws://unused:9999",
         )
         client = env.client
         assert client is not None
-        assert client.uri == "ws://unused:9999"
+        assert client.host == "unused"
+        assert client.port == 9999
         # Second access should return the same object.
         assert env.client is client
+
+    def test_client_prebuilt_is_used_directly(self) -> None:
+        """A pre-built GoServer passed at init must be used as-is."""
+        from unittest.mock import MagicMock
+
+        mock_server = MagicMock()
+        env = TorchRLGoEnv(
+            board_size=BOARD_SIZE,
+            client=mock_server,
+        )
+        assert env._client is mock_server
+        assert env.client is mock_server
+
+
+# ---------------------------------------------------------------------------
+# GoServer tests
+# ---------------------------------------------------------------------------
+
+
+class TestGoServer:
+    """Integration tests for the GoServer WebSocket server."""
+
+    def _find_free_port(self) -> int:
+        """Return an OS-assigned free TCP port."""
+        import socket
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return int(s.getsockname()[1])
+
+    def _make_reset_response(self) -> str:
+        return json.dumps(
+            {
+                "board": ["." * BOARD_SIZE] * BOARD_SIZE,
+                "current_player": "black",
+                "legal_moves": [True] * (BOARD_SIZE * BOARD_SIZE + 1),
+            }
+        )
+
+    def _make_step_response(self) -> str:
+        return json.dumps(
+            {
+                "board": ["." * BOARD_SIZE] * BOARD_SIZE,
+                "current_player": "white",
+                "legal_moves": [True] * (BOARD_SIZE * BOARD_SIZE + 1),
+                "reward": 0.0,
+                "done": False,
+            }
+        )
+
+    def test_is_not_connected_before_client(self) -> None:
+        """Server must report disconnected before any client connects."""
+        port = self._find_free_port()
+        server = GoServer(host="127.0.0.1", port=port)
+        server.start()
+        assert server.is_connected is False
+
+    def test_wait_for_client_timeout(self) -> None:
+        """wait_for_client must return False when it times out."""
+        port = self._find_free_port()
+        server = GoServer(host="127.0.0.1", port=port)
+        server.start()
+        connected = server.wait_for_client(timeout=0.1)
+        assert connected is False
+
+    def test_is_connected_after_client_connects(self) -> None:
+        """is_connected must be True while a client is connected."""
+        port = self._find_free_port()
+        server = GoServer(host="127.0.0.1", port=port)
+        server.start()
+
+        async def _connect_and_hold() -> None:
+            uri = f"ws://127.0.0.1:{port}"
+            async with websockets.connect(uri):
+                await asyncio.sleep(0.2)
+
+        import threading
+
+        done = threading.Event()
+
+        def _run() -> None:
+            asyncio.run(_connect_and_hold())
+            done.set()
+
+        t = threading.Thread(target=_run, daemon=True)
+        t.start()
+        connected = server.wait_for_client(timeout=2.0)
+        assert connected is True
+        assert server.is_connected is True
+        done.wait(timeout=2.0)
+
+    def test_reset_and_step_exchange(self) -> None:
+        """reset() and step() must successfully exchange messages."""
+        port = self._find_free_port()
+        server = GoServer(host="127.0.0.1", port=port)
+        server.start()
+
+        reset_resp = self._make_reset_response()
+        step_resp = self._make_step_response()
+
+        async def _fake_client() -> None:
+            uri = f"ws://127.0.0.1:{port}"
+            async with websockets.connect(uri) as ws:
+                # Respond to reset
+                msg = json.loads(await ws.recv())
+                assert msg["type"] == "reset"
+                await ws.send(reset_resp)
+                # Respond to step
+                msg = json.loads(await ws.recv())
+                assert msg["type"] == "step"
+                await ws.send(step_resp)
+
+        import threading
+
+        t = threading.Thread(
+            target=lambda: asyncio.run(_fake_client()), daemon=True
+        )
+        t.start()
+        server.wait_for_client(timeout=2.0)
+
+        result = server.reset(opponent="Netburners", board_size=BOARD_SIZE)
+        assert "board" in result
+        assert "current_player" in result
+
+        step_result = server.step(0)
+        assert "reward" in step_result
+        assert "done" in step_result
+
+        t.join(timeout=2.0)
+
+    def test_connection_error_when_no_client(self) -> None:
+        """reset() must raise ConnectionError if no client is connected."""
+        port = self._find_free_port()
+        server = GoServer(host="127.0.0.1", port=port)
+        server.start()
+        with pytest.raises(ConnectionError):
+            server.reset()
+
+    def test_is_disconnected_after_client_leaves(self) -> None:
+        """is_connected must become False after the client disconnects."""
+        port = self._find_free_port()
+        server = GoServer(host="127.0.0.1", port=port)
+        server.start()
+
+        async def _connect_and_close() -> None:
+            uri = f"ws://127.0.0.1:{port}"
+            async with websockets.connect(uri):
+                pass  # close immediately
+
+        import threading
+
+        t = threading.Thread(
+            target=lambda: asyncio.run(_connect_and_close()), daemon=True
+        )
+        t.start()
+        server.wait_for_client(timeout=2.0)
+        t.join(timeout=2.0)
+        # Give the server handler time to notice the close.
+        import time
+
+        time.sleep(0.2)
+        assert server.is_connected is False
