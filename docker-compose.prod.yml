@@ -1,0 +1,29 @@
+name: bitburner-go-rl
+
+networks:
+  rl-network:
+    driver: bridge
+
+services:
+  train:
+    build:
+      context: .
+      dockerfile: prod.Dockerfile
+    container_name: bitburner-train
+    restart: on-failure
+    ports:
+      - "8765:8765"
+    volumes:
+      - ./checkpoints:/app/checkpoints
+    networks:
+      - rl-network
+
+  train_env:
+    build:
+      context: .
+      dockerfile: train_env.Dockerfile
+    container_name: bitburner-train-env
+    depends_on:
+      - train
+    networks:
+      - rl-network
