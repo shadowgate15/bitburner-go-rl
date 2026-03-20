@@ -19,26 +19,29 @@ async def main() -> None:
         loop.add_signal_handler(sig, stop_event.set)
 
     async with async_playwright() as playwright:
+        print("launching chromium...")
         browser = await playwright.chromium.launch(headless=True)
-        context = await browser.new_context()
+        context = await browser.new_context(record_video_dir="/app/videos/")
         page = await context.new_page()
 
         # Load the game.
+        print("Loading the game...")
         await page.goto(BITBURNER_URL)
         await page.wait_for_load_state("networkidle")
 
         # Open the Options menu.
+        print("Opening options...")
         await page.get_by_role("button", name="Options").click()
 
         # Click "Import Game" which triggers a file chooser.
+        print("Clicking on import game...")
         async with page.expect_file_chooser() as fc_info:
-            await page.get_by_role(
-                "menuitem", name="Import Game"
-            ).click()
+            await page.get_by_role("button", name="Import Game").click()
         file_chooser = await fc_info.value
         await file_chooser.set_files(str(SAVE_FILE))
 
         # Wait for the Confirm button and click it.
+        print("Confirming...")
         await page.get_by_role("button", name="Confirm").click()
 
         # The game reloads after import; wait for it to settle.
