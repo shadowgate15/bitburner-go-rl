@@ -1,21 +1,17 @@
 """Setup the Bitburner game training environment using Playwright."""
 
 import asyncio
-import base64
 import signal
 from pathlib import Path
 
 from playwright.async_api import async_playwright
 
-SAVE_DATA_FILE = Path("/app/save_data.b64")
+SAVE_FILE = Path("/app/bitburnerSave.json.gz")
 BITBURNER_URL = "https://bitburner-official.github.io/"
 
 
 async def main() -> None:
-    """Load Bitburner and populate IndexDB with the baked-in save data."""
-    raw = SAVE_DATA_FILE.read_text().strip()
-    save_bytes: list[int] = list(base64.b64decode(raw)) if raw else []
-
+    """Load Bitburner and import the save file through the game UI."""
     stop_event = asyncio.Event()
 
     loop = asyncio.get_running_loop()
@@ -27,42 +23,25 @@ async def main() -> None:
         context = await browser.new_context()
         page = await context.new_page()
 
-        # Navigate to the game so its origin is established before
-        # touching IndexDB (IndexDB is scoped to the page origin).
+        # Load the game.
         await page.goto(BITBURNER_URL)
         await page.wait_for_load_state("networkidle")
 
-        # Open (or create) the IndexDB database and store the save data.
-        await page.evaluate(
-            """
-            async (saveBytes) => {
-                const db = await new Promise((resolve, reject) => {
-                    const request = indexedDB.open('bitburnerSave', 1);
-                    request.onupgradeneeded = (event) => {
-                        const db = event.target.result;
-                        if (!db.objectStoreNames.contains('savestring')) {
-                            db.createObjectStore('savestring');
-                        }
-                    };
-                    request.onsuccess =
-                        (event) => resolve(event.target.result);
-                    request.onerror = (event) => reject(event.target.error);
-                });
-                const tx = db.transaction('savestring', 'readwrite');
-                const store = tx.objectStore('savestring');
-                store.put(new Uint8Array(saveBytes), 'save');
-                await new Promise((resolve, reject) => {
-                    tx.oncomplete = resolve;
-                    tx.onerror = (event) => reject(event.target.error);
-                });
-                db.close();
-            }
-            """,
-            save_bytes,
-        )
+        # Open the Options menu.
+        await page.get_by_role("button", name="Options").click()
 
-        # Reload so the game reads the newly written save on startup.
-        await page.reload()
+        # Click "Import Game" which triggers a file chooser.
+        async with page.expect_file_chooser() as fc_info:
+            await page.get_by_role(
+                "menuitem", name="Import Game"
+            ).click()
+        file_chooser = await fc_info.value
+        await file_chooser.set_files(str(SAVE_FILE))
+
+        # Wait for the Confirm button and click it.
+        await page.get_by_role("button", name="Confirm").click()
+
+        # The game reloads after import; wait for it to settle.
         await page.wait_for_load_state("networkidle")
 
         # Keep the browser alive for RL training interactions.
