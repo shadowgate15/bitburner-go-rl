@@ -46,6 +46,7 @@ from torchrl.objectives import ClipPPOLoss
 from torchrl.objectives.value import GAE
 
 from src.curriculum.curriculum import GoCurriculumManager
+from src.env.client import GoServer
 from src.env.go_env import TorchRLGoEnv
 from src.train.model import GoActorNet, GoValueNet
 
@@ -640,6 +641,14 @@ def train_with_curriculum(
     ``train_env.opponent`` so the next episode reset picks up the
     new setting without rebuilding the collector.
 
+    Server lifecycle
+    ----------------
+    A single :class:`~src.env.client.GoServer` is started before the
+    training loop begins.  The loop blocks until the Bitburner game
+    connects.  If the game disconnects at any point the loop pauses,
+    waits for the game to reconnect, resets the training environment,
+    and resumes from the next iteration.
+
     Args:
         cfg: Curriculum training configuration.  Defaults to
             ``CurriculumTrainConfig()`` (all default hyper-parameters).
@@ -656,6 +665,19 @@ def train_with_curriculum(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[train_curriculum] Using device: {device}")
+
+    # ------------------------------------------------------------------
+    # Start the WebSocket server and wait for the Bitburner client
+    # ------------------------------------------------------------------
+    server = GoServer.from_uri(cfg.websocket_uri)
+    server.start()
+    print(
+        f"[train_curriculum] WebSocket server listening on "
+        f"{server.host}:{server.port}"
+        f" — waiting for Bitburner to connect …"
+    )
+    server.wait_for_client()
+    print("[train_curriculum] Bitburner client connected.")
 
     # ------------------------------------------------------------------
     # Build networks
@@ -709,8 +731,9 @@ def train_with_curriculum(
     # ------------------------------------------------------------------
     # Initialise training environment and collector
     # ------------------------------------------------------------------
-    # Keep a direct reference to the training env so we can update
-    # env.opponent between iterations without rebuilding the collector.
+    # Both environments share the single GoServer connection so that only
+    # one WebSocket session is needed (Bitburner sends/receives on the
+    # same connection regardless of whether we are in training or eval).
     def _build_collector(
         train_env: TorchRLGoEnv,
     ) -> SyncDataCollector:
@@ -728,15 +751,17 @@ def train_with_curriculum(
         board_size=cfg.board_size,
         websocket_uri=cfg.websocket_uri,
         opponent=str(init_cfg["opponent"]),
+        client=server,
     )
     collector = _build_collector(train_env)
 
     # Separate environment used exclusively for evaluation episodes.
-    # It is created fresh so it doesn't interfere with the collector.
+    # It shares the same server connection as train_env.
     eval_env = TorchRLGoEnv(
         board_size=cfg.board_size,
         websocket_uri=cfg.websocket_uri,
         opponent=str(init_cfg["opponent"]),
+        client=server,
     )
 
     # ------------------------------------------------------------------
@@ -771,7 +796,32 @@ def train_with_curriculum(
         f"  board_size        = {cfg.board_size}"
     )
 
-    for data in collector:
+    data_iter = iter(collector)
+    while True:
+        # ------------------------------------------------------------------
+        # Collect one batch of experience.  A ConnectionError means the
+        # Bitburner client disconnected; pause and wait for reconnect.
+        # ------------------------------------------------------------------
+        try:
+            data = next(data_iter)
+        except StopIteration:
+            break
+        except ConnectionError:
+            print(
+                "[train_curriculum] Bitburner client disconnected during "
+                "data collection.  Waiting for reconnect …"
+            )
+            server.wait_for_client()
+            print(
+                "[train_curriculum] Bitburner client reconnected.  "
+                "Resetting environment …"
+            )
+            train_env.reset()
+            collector.shutdown()
+            collector = _build_collector(train_env)
+            data_iter = iter(collector)
+            continue
+
         iter_idx += 1
 
         # --------------------------------------------------------------
@@ -837,11 +887,28 @@ def train_with_curriculum(
             # Sync eval env to current curriculum opponent.
             eval_env.opponent = curriculum.current_opponent
 
-            metrics = run_evaluation_episodes(
-                actor=actor,
-                eval_env=eval_env,
-                n_episodes=cfg.eval_episodes,
-            )
+            try:
+                metrics = run_evaluation_episodes(
+                    actor=actor,
+                    eval_env=eval_env,
+                    n_episodes=cfg.eval_episodes,
+                )
+            except ConnectionError:
+                print(
+                    "[train_curriculum] Bitburner client disconnected during "
+                    "evaluation.  Waiting for reconnect …"
+                )
+                server.wait_for_client()
+                print(
+                    "[train_curriculum] Bitburner client reconnected.  "
+                    "Resetting environment …"
+                )
+                train_env.reset()
+                collector.shutdown()
+                collector = _build_collector(train_env)
+                data_iter = iter(collector)
+                continue
+
             print(
                 f"[train_curriculum]   win_rate={metrics['win_rate']:.3f}"
                 f"  avg_reward={metrics['avg_reward']:.4f}"

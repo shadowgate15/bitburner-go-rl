@@ -1,12 +1,14 @@
 """TorchRL environment for the board game Go via the Bitburner IPvGO engine."""
 
+from __future__ import annotations
+
 import torch
 from tensordict import TensorDict
 from torchrl.data import Bounded, Composite, Unbounded
 from torchrl.data.tensor_specs import Binary, Categorical
 from torchrl.envs import EnvBase
 
-from src.env.client import GoClient
+from src.env.client import GoServer
 
 # Stone symbols used in the board strings returned by the server.
 _BLACK = "X"
@@ -80,7 +82,7 @@ class TorchRLGoEnv(EnvBase):
 
     The environment does **not** implement any Go rules itself.  Every game
     logic decision (legality checking, capture resolution, scoring, …) is
-    delegated to the remote Bitburner server through the :class:`GoClient`.
+    delegated to the remote Bitburner client through the :class:`GoServer`.
 
     Observation space
     -----------------
@@ -98,7 +100,15 @@ class TorchRLGoEnv(EnvBase):
 
     Args:
         board_size: Side length of the square board (default 9).
-        websocket_uri: URI of the Bitburner IPvGO WebSocket server.
+        websocket_uri: URI used to derive the host and port when no
+            *client* is supplied.  Format: ``ws://host:port``.
+        opponent: Built-in BitBurner opponent name (default
+            ``"Netburners"``).
+        client: Optional pre-built :class:`GoServer` instance to use
+            instead of creating one lazily from *websocket_uri*.  Pass
+            a shared server when multiple environments must communicate
+            over the same connection (e.g. the training and evaluation
+            environments in :func:`~src.train.train.train_with_curriculum`).
     """
 
     def __init__(
@@ -106,16 +116,21 @@ class TorchRLGoEnv(EnvBase):
         board_size: int = 9,
         websocket_uri: str = "ws://localhost:8765",
         opponent: str = "Netburners",
+        client: GoServer | None = None,
     ) -> None:
         """Initialise the environment and its specs.
 
         Args:
             board_size: Side length of the board.
-            websocket_uri: WebSocket URI to connect to.
+            websocket_uri: WebSocket URI used to infer host/port when
+                *client* is not provided.
             opponent: Name of the built-in BitBurner opponent to play
                 against.  Can be updated at any time by assigning
                 ``env.opponent = "..."``; the new value is used on the
                 next episode reset.
+            client: Pre-built :class:`GoServer` to use.  When ``None``
+                a server is created lazily from *websocket_uri* on first
+                access.
         """
         super().__init__()
 
@@ -125,9 +140,9 @@ class TorchRLGoEnv(EnvBase):
         #: between episodes without rebuilding the environment.
         self.opponent: str = opponent
 
-        # Lazy client - created on first use so the environment object can be
-        # constructed without a running server (useful for spec inspection).
-        self._client: GoClient | None = None
+        # Use the provided server directly, or create one lazily on first
+        # access via the `client` property.
+        self._client: GoServer | None = client
 
         self._make_specs()
 
@@ -136,10 +151,18 @@ class TorchRLGoEnv(EnvBase):
     # ------------------------------------------------------------------
 
     @property
-    def client(self) -> GoClient:
-        """Return the :class:`GoClient`, creating it on first access."""
+    def client(self) -> GoServer:
+        """Return the :class:`GoServer`, creating it lazily on first access.
+
+        When no *client* was provided at construction time a new
+        :class:`GoServer` is created from :attr:`websocket_uri`.  The
+        server is **not** started automatically; the caller (typically the
+        training loop) is responsible for calling :meth:`GoServer.start`
+        and :meth:`GoServer.wait_for_client` before issuing any game
+        commands.
+        """
         if self._client is None:
-            self._client = GoClient(self.websocket_uri)
+            self._client = GoServer.from_uri(self.websocket_uri)
         return self._client
 
     # ------------------------------------------------------------------
