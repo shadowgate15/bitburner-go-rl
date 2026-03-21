@@ -11,6 +11,8 @@ services:
       dockerfile: prod.Dockerfile
     container_name: bitburner-train
     restart: on-failure
+    environment:
+      - TRAIN_ARGS=${TRAIN_ARGS:-}
     ports:
       - "8765:8765"
     volumes:
