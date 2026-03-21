@@ -2,4 +2,4 @@
 
 set -e
 
-python __main__.py
+exec python __main__.py $TRAIN_ARGS "$@"
